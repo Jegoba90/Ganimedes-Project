@@ -80,7 +80,7 @@ same four pillars, each earned by real adoption before it is built:
 
 ## Tech
 
-TypeScript. Subject to change as the project finds its shape.
+Go. Distributed as a single static binary, no runtime required.
 
 ## License
 
