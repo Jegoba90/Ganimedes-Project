@@ -1,0 +1,17 @@
+# Compiled binaries
+/ganimedes
+/ganimedes.exe
+*.exe
+*.test
+
+# Build output directory (if we add one later)
+/dist/
+/bin/
+
+# Go workspace files
+go.work
+go.work.sum
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
