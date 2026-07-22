@@ -78,9 +78,24 @@ same four pillars, each earned by real adoption before it is built:
 | Policy     | What should it do right now?    | YAML rules    | Policy engine + risk scoring   |
 | Proof      | Can we prove what it did?       | Hash-chain    | Verifiable audit trail         |
 
-## Tech
+## Stack
 
-Go. Distributed as a single static binary, no runtime required.
+| Layer          | Choice                                              | Status  |
+|----------------|------------------------------------------------------|---------|
+| Language       | Go 1.22+                                              | in use  |
+| Dependencies   | none (standard library only)                          | in use  |
+| MCP transport  | stdio, JSON-RPC 2.0, newline-delimited JSON           | in use  |
+| CLI            | hand-rolled subcommands, no framework                 | in use  |
+| Packaging      | `go build` -> single static binary, no runtime needed | in use  |
+| Config format  | YAML                                                  | planned |
+| Audit log      | JSONL file, SHA-256 hash chain                        | planned |
+| Approval UI    | minimal HTML page served on localhost via `net/http`  | planned |
+
+No frontend framework: the only UI is a small local approval page served
+directly by the Go binary. Everything else is a CLI/proxy with no screen.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the full technical design and build
+order.
 
 ## License
 
