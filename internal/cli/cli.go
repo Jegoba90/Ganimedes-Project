@@ -12,6 +12,9 @@ package cli
 import (
 	"fmt"
 	"os"
+
+	"github.com/Jegoba90/Ganimedes-Project/internal/config"
+	"github.com/Jegoba90/Ganimedes-Project/internal/proxy"
 )
 
 // version is stamped by hand for now. Later it can be injected at build time
@@ -39,11 +42,10 @@ func Run(args []string) int {
 		printUsage()
 		return 0
 
-	// The three commands below are the v0 surface from docs/DESIGN.md. They
-	// are wired up but deliberately not built yet: the logic lands in later
-	// steps of the build order.
+	// `run` is milestone 1 (transparent passthrough). `verify` and `init`
+	// stay wired but unbuilt until their milestones (see docs/DESIGN.md).
 	case "run":
-		return notImplemented("run")
+		return runCommand(args[1:])
 	case "verify":
 		return notImplemented("verify")
 	case "init":
@@ -54,6 +56,27 @@ func Run(args []string) int {
 		printUsage()
 		return 2
 	}
+}
+
+// runCommand implements `ganimedes run -- <server-command> [args...]`. It wraps
+// the named MCP server, proxying the client's stdio (os.Stdin/os.Stdout) to and
+// from it. A leading "--" is accepted and skipped so that `run` can grow its
+// own flags later without colliding with the wrapped command's arguments.
+func runCommand(args []string) int {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "run: usage: ganimedes run -- <server-command> [args...]")
+		return 2
+	}
+
+	cfg := config.Config{Command: args[0], Args: args[1:]}
+	if err := proxy.Run(cfg, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "run: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // notImplemented is the placeholder for v0 commands that are wired but not
@@ -71,7 +94,7 @@ Usage:
   ganimedes <command> [flags]
 
 Commands:
-  run       Start the MCP gateway (not implemented yet)
+  run       Wrap an MCP server: ganimedes run -- <server-cmd> [args]
   verify    Check the integrity of the audit log (not implemented yet)
   init      Scaffold a config file (not implemented yet)
   version   Print the version
