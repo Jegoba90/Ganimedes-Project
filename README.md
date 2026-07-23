@@ -1,4 +1,6 @@
-# Ganimedes
+<p align="center">
+  <img src="assets/ganimedes-title.svg" alt="Ganimedes" width="384">
+</p>
 
 > The control and security layer for autonomous AI agents.
 > We secure what AI agents **do**, not just what they know.
@@ -88,7 +90,7 @@ same four pillars, each earned by real adoption before it is built:
 | CLI            | hand-rolled subcommands, no framework                 | in use  |
 | Packaging      | `go build` -> single static binary, no runtime needed | in use  |
 | Config format  | YAML                                                  | planned |
-| Audit log      | JSONL file, SHA-256 hash chain                        | planned |
+| Audit log      | JSONL file, SHA-256 hash chain                        | in use  |
 | Approval UI    | minimal HTML page served on localhost via `net/http`  | planned |
 
 No frontend framework: the only UI is a small local approval page served
