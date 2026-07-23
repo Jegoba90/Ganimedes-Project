@@ -1,0 +1,123 @@
+name: 🛡️ CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Cancels stale runs when new commits land on the same branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --- BUILD, VET, TEST (cross-platform: this ships as a binary for all three) ---
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 🛡️ Build
+        run: go build ./...
+
+      - name: 🔍 Vet
+        run: go vet ./...
+
+      - name: 🧪 Test (race detector + coverage)
+        run: go test ./... -race -cover
+
+  # --- LINT & FORMAT (single OS: text-content checks, no need to repeat 3x) ---
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 📐 Format check (gofmt)
+        run: |
+          fmt_diff="$(gofmt -l .)"
+          if [ -n "$fmt_diff" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$fmt_diff"
+            exit 1
+          fi
+
+      - name: 🧹 golangci-lint
+        uses: golangci/golangci-lint-action@v6
+
+  # --- SECURITY AUDIT ---
+  security-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so Gitleaks can scan every new commit
+
+      - name: 🕵️ Gitleaks (Secret Scanning)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 🛑 govulncheck (Go vulnerability DB, call-graph aware)
+        uses: golang/govulncheck-action@v1
+
+      - name: 🛡️ Trivy Scan (Filesystem)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          ignore-unfixed: true
+          format: 'table'
+          severity: 'HIGH,CRITICAL'
+
+  # --- SAST: CodeQL (source code analysis, not just dependencies) ---
+  codeql-sast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+
+      - name: 🔬 CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:go"
+
+  # --- CONTAINER SCANNING: N/A ---
+  # Ganimedes ships as a binary, not a Docker image, so there is nothing to
+  # build and scan here (unlike CryptoCapi's backend/collector images).
+
+  # --- E2E: N/A ---
+  # No web UI in v0 (see docs/USE_CASES.md). Same reasoning as CryptoCapi's
+  # disabled Playwright job, just without the job existing at all instead of
+  # being toggled off.

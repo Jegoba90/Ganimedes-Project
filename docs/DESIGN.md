@@ -34,9 +34,9 @@ instead of at the server directly. That is the adoption win.
 |---|-----------|--------------|-----------|
 | 1 | **Proxy core (the pipe)** | Reads JSON-RPC from the client, spawns the real server, forwards both directions, intercepts `tools/call`, correlates request/response by `id`, passes the `initialize` handshake through. | **High.** Foundation and biggest risk: if it corrupts the protocol, nothing works. |
 | 2 | **Config loader** | YAML file: which server to wrap (command + args), deny rules, which tools require approval. | Low |
-| 3 | **Policy engine** | Given a `tools/call` (name + args), decides ALLOW / DENY / REQUIRE_APPROVAL. v0: match by name. Deterministic, no ML. | Low |
+| 3 | **Policy engine** | Given a `tools/call` (name + args), decides ALLOW / DENY / REQUIRE_APPROVAL. v0: match by name, **default-allow** (anything not listed is allowed). Denied tools still appear in `tools/list` and are blocked on call. Deterministic, no ML. | Low |
 | 4 | **Human-in-the-loop** | When a tool requires approval: pause, show it to a human, wait for approve/reject, with timeout (no answer = deny). | Medium-high (UX) |
-| 5 | **Hash-chained audit log** | Append-only log. Each entry: timestamp, session, tool, args, decision, result hash, and `prev_hash`. `hash = SHA-256(canonical JSON)`. Break a past entry, break the chain. Plus a `verify` command. | Low-medium |
+| 5 | **Hash-chained audit log** | Append-only log. Each entry stores the **full call** (tool, args, result) plus decision, timestamp, session, and `prev_hash`. `entry hash = SHA-256(canonical JSON of the entry)`. Full content serves debugging; the chain gives tamper-evidence. Plus a `verify` command. | Low-medium |
 | 6 | **CLI / entrypoint** | `ganimedes run --config ...`, `ganimedes verify`, `ganimedes init`. | Low |
 | 7 | **Packaging** | Single static binary via `go build`; install and run, no runtime. | Low |
 
@@ -102,3 +102,38 @@ cheapest piece (audit) second.
   Node-heavy MCP crowd (mitigated: an MCP client config can point at any
   executable, so a Go binary works fine as a server command), plus the
   maintainer's Go learning curve (accepted deliberately).
+
+### Deny-list and tool discovery: appear-and-block (decided 2026-07-23)
+
+- **Decision:** a denied tool still appears in `tools/list`; it is blocked at
+  call time with a JSON-RPC error, not hidden from discovery.
+- **Why:** hiding a tool means rewriting the `tools/list` response (more proxy
+  complexity) and leaves the agent guessing why a tool vanished. Blocking on
+  call is simpler, returns a clear error, and leaves an audit record that the
+  agent tried.
+- **v0 default:** default-allow. Everything not on the deny-list passes; the
+  deny-list is the exception, not an allow-list.
+- **Later option:** a "hide from discovery" mode for users who prefer denied
+  tools to be invisible.
+
+### Audit content: full entry plus hash chain (decided 2026-07-23)
+
+- **Decision:** the audit log stores the **full** call (tool, arguments, result)
+  in each JSONL entry, and the SHA-256 hash chain is computed over the canonical
+  JSON of the full entry (including `prev_hash`).
+- **Why:** storing only a hash of the result gives tamper-evidence but kills the
+  debugging use case (you cannot see what actually happened). Storing the full
+  entry serves both: debugging reads the content, `verify` walks the chain.
+- **Accepted tradeoff:** full arguments and results may contain secrets (tokens,
+  PII), so the audit log itself becomes sensitive data. v0 logs everything as-is
+  and documents this; **redaction / field filtering is a planned later feature.**
+
+### Human-in-the-loop timeout: configurable, default deny (decided 2026-07-23)
+
+- **Decision:** the approval wait has a **configurable timeout**; on expiry the
+  call is denied (fail-closed).
+- **Known limitation:** while Ganimedes holds a `tools/call` open waiting for a
+  human, the MCP **client has its own timeout** and may give up first. These are
+  two independent timers. v0 does not solve the client-side timeout; it
+  documents that very long human delays can hit it, and keeps the approval
+  timeout configurable so it can be tuned below the client's.

@@ -6,6 +6,12 @@
 > syntax, which GitHub renders natively in markdown, so the diagrams stay
 > plain text and diffable in git instead of drifting screenshots.
 
+**Scope of interception:** Ganimedes only inspects `tools/call`. Every other
+message (`initialize`, `tools/list`, `resources/*`, `prompts/*`, notifications)
+and every error returned by the real server is pure passthrough, forwarded
+unchanged. Policy is **default-allow**: only tools on the deny-list or the
+approval-list are treated specially.
+
 ## 1. Transparent passthrough
 
 The proxy forwards every message unchanged in both directions, including the
@@ -24,6 +30,11 @@ sequenceDiagram
     G-->>C: capabilities (forwarded)
     C->>G: initialized (notification)
     G->>S: initialized (forwarded)
+
+    C->>G: tools/list (request)
+    G->>S: tools/list (forwarded)
+    S-->>G: tool definitions (response)
+    G-->>C: tool definitions (forwarded)
 
     C->>G: tools/call "search_files" (request, id=1)
     G->>S: tools/call "search_files" (forwarded, id=1)
@@ -46,15 +57,16 @@ sequenceDiagram
     C->>G: tools/call "search_files" (request, id=7)
     G->>S: tools/call "search_files" (forwarded)
     S-->>G: result
-    G->>A: append entry (tool, args, result hash, prev_hash)
-    A-->>G: hash of new entry
+    G->>A: append full entry (tool, args, result) + prev_hash
+    A-->>G: entry hash (SHA-256 of canonical entry)
     G-->>C: result (forwarded, id=7)
 ```
 
 ## 3. Deny-list
 
-A denied call never reaches the real server. Ganimedes answers with a JSON-RPC
-error directly and still records the attempt.
+Policy is checked by tool name. An allowed call flows through like diagram 2;
+a denied call never reaches the real server. Either way, Ganimedes records the
+attempt.
 
 ```mermaid
 sequenceDiagram
@@ -64,18 +76,27 @@ sequenceDiagram
     participant A as Audit Log
     participant S as MCP Server (real tools)
 
-    C->>G: tools/call "db.dropTable" (request, id=12)
-    G->>P: check policy for "db.dropTable"
-    P-->>G: DENY
-    G->>A: append entry (tool, args, decision=DENY)
-    G-->>C: JSON-RPC error (denied by policy)
-    Note over S: the real server never sees this call
+    C->>G: tools/call (request, id=12)
+    G->>P: check policy (by tool name)
+    P-->>G: decision
+
+    alt ALLOW (default: tool not on deny-list)
+        G->>S: tools/call (forwarded)
+        S-->>G: result
+        G->>A: append full entry (decision=ALLOW)
+        G-->>C: result (forwarded)
+    else DENY (tool on deny-list, e.g. "db.dropTable")
+        G->>A: append full entry (decision=DENY)
+        G-->>C: JSON-RPC error (denied by policy)
+        Note over S: the real server never sees this call
+    end
 ```
 
 ## 4. Human-in-the-loop
 
 A flagged call pauses. A human reviews it on the local approval page. The
-result branches on approve, reject, or timeout (timeout defaults to deny).
+result branches on approve, reject, or timeout. The approval timeout is
+configurable and fails closed (defaults to deny).
 
 ```mermaid
 sequenceDiagram
@@ -90,6 +111,7 @@ sequenceDiagram
     C->>G: tools/call "email.send" (request, id=20)
     G->>P: check policy for "email.send"
     P-->>G: REQUIRE_APPROVAL
+    Note over C,G: client's tools/call is held open while we wait (client has its own timeout, separate from ours)
     G->>H: open pending approval (tool, args)
     U->>H: reviews, clicks Approve/Reject
 
@@ -97,11 +119,11 @@ sequenceDiagram
         H-->>G: APPROVED
         G->>S: tools/call "email.send" (forwarded)
         S-->>G: result
-        G->>A: append entry (decision=APPROVED, result hash)
+        G->>A: append full entry (decision=APPROVED)
         G-->>C: result (forwarded)
     else Rejected or timeout
         H-->>G: REJECTED / TIMEOUT
-        G->>A: append entry (decision=REJECTED or TIMEOUT)
+        G->>A: append full entry (decision=REJECTED or TIMEOUT)
         G-->>C: JSON-RPC error (rejected by human / timeout)
     end
 ```

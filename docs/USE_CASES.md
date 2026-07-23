@@ -5,6 +5,9 @@
 > If a scenario needs something v0 does not have, it is listed separately
 > under "Later", so this file does not overstate what is actually buildable
 > right now.
+>
+> Note: v0 is **default-allow**. The deny-list blocks only the tools you list;
+> everything else passes through.
 
 ## v0 (buildable now)
 
@@ -51,8 +54,9 @@
   arguments, in what order, is hard without a dedicated record.
 - **Without Ganimedes:** scraping chat transcripts or provider-specific logs, if
   they exist at all.
-- **With Ganimedes:** the JSONL audit log is a precise, ordered record,
-  independent of which model or provider was used.
+- **With Ganimedes:** the JSONL audit log is a precise, ordered record of each
+  call (tool, arguments, and result), independent of which model or provider was
+  used.
 - **v0 feature:** audit log
 
 ### 5. Evaluating a third-party MCP server before trusting it
@@ -76,9 +80,9 @@
 - **Needs:** centralized log storage, retention policy, aggregation across
   many local Ganimedes instances, a dashboard.
 - **Why not v0:** this needs a hosted or shared component, not a single local
-  JSONL file. This is the seed of the open-core paid tier (see the
-  monetization discussion in the project history): the gateway stays local and
-  free, the hosted layer is what a team pays for.
+  JSONL file. This is the seed of the open-core model: the gateway stays local
+  and free, and the hosted layer (centralized storage, retention, dashboard) is
+  what a team would pay for.
 
 ### Team-wide approval workflow
 
