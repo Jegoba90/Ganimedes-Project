@@ -35,8 +35,15 @@ jobs:
       - name: 🔍 Vet
         run: go vet ./...
 
-      - name: 🧪 Test (race detector + coverage)
-        run: go test ./... -race -cover
+      - name: 🧪 Test (coverage, all platforms)
+        run: go test ./... -cover
+
+      # The race detector needs cgo + a C compiler. Linux/macOS runners have
+      # one by default; the Windows runner does not. Cross-platform correctness
+      # is already covered above, so race runs everywhere except Windows.
+      - name: 🏁 Test (race detector)
+        if: runner.os != 'Windows'
+        run: go test ./... -race
 
   # --- LINT & FORMAT (single OS: text-content checks, no need to repeat 3x) ---
   lint:
@@ -112,6 +119,20 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:go"
+          # Code Scanning (the Security tab) needs GitHub Advanced Security,
+          # which is only free on public repos. This repo is private for now,
+          # so upload results as a plain artifact instead of the Security tab
+          # (same workaround CryptoCapi's quality-gate.yml uses). Revisit once
+          # the repo goes public.
+          upload: never
+          output: sarif-results
+
+      - name: 📦 Upload SARIF as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-go
+          path: sarif-results/
+          retention-days: 7
 
   # --- CONTAINER SCANNING: N/A ---
   # Ganimedes ships as a binary, not a Docker image, so there is nothing to
