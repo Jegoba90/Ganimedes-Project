@@ -155,11 +155,18 @@ different goroutines. They are matched by JSON-RPC `id` through a small
 mutex-guarded map: the request side stores `{id -> tool, args}`, the response
 side takes it back out when a matching `id` returns.
 
-The append itself only ever happens on the **response** side, so **all** audit
-writes come from one goroutine and the hash chain is serialized for free — this
-is what resolves §2's forward note. `audit.Logger` still takes a mutex around
-each append so it is correct as a standalone component, but the proxy does not
-rely on that mutex for ordering.
+In milestone 2 the append only ever happened on the **response** side, so all
+audit writes came from one goroutine and the hash chain was serialized for free
+— this is what resolved §2's forward note. `audit.Logger` still takes a mutex
+around each append so it is correct as a standalone component.
+
+> **Updated in milestone 3 (see §6):** the deny-list records a blocked call from
+> the **request** side, the moment the call is denied (there is no response to
+> wait for). Both directions now call `Append`, so the single-writer property no
+> longer holds and the `audit.Logger` mutex — not the proxy's structure — is what
+> serializes the chain. CI's `-race` build proves there is no data race. This
+> still satisfies Constitution Art. 3.2, whose requirement is that writes are
+> *serialized* (through a channel or a mutex), which the mutex provides.
 
 ### The hash chain (package `audit`)
 
@@ -215,3 +222,90 @@ Status: **milestone 2 code complete** (2026-07-23).
    two `tools/call`s (a `tools/list` was correctly *not* audited), confirmed the
    client got both responses verbatim, `verify` reported the chain intact, and a
    hand-edit to the log made `verify` report the tampered entry and exit 1.
+
+## 6. Milestone 3 design: the deny-list
+
+**Goal:** a `tools/call` to a tool the operator has blocked never reaches the
+real server; the client gets a clean JSON-RPC error, and the blocked attempt is
+recorded. This is build-order step 3 in [`DESIGN.md`](DESIGN.md#5-build-order);
+the wire behavior is diagram 3 in [`SEQUENCES.md`](SEQUENCES.md#3-deny-list).
+
+### Two new pure packages, wired by the proxy
+
+Following the §1 layering, the decision and the config are pure packages the
+proxy calls into; neither knows about JSON-RPC framing or the audit format.
+
+- **`internal/config`** grew a JSON `Load(path)` and a `Deny []string` field.
+  JSON, not YAML, keeps the Zero-Dependency Policy (Art. 1.1). `Load` uses
+  `DisallowUnknownFields`: in a security tool a mistyped key like `"denny"` must
+  fail loudly, not silently leave the deny-list empty (every tool allowed). It
+  also rejects trailing data after the object. `Load` does **not** require
+  `Command` — the CLI may supply it — so final validation is the caller's job.
+- **`internal/policy`** is the decision engine: `New(deny)` builds an `Engine`,
+  `Decide(tool)` returns `Allow` or `Deny`. It is default-allow (only listed
+  names are blocked), exact-match, deterministic, no ML. A nil `Engine` and an
+  empty list both allow everything, so passthrough is the natural zero value.
+  `REQUIRE_APPROVAL` is deliberately **not** a `Decision` value yet: nothing in
+  v0 returns or enforces it, and adding it early would claim more than the code
+  does (Art. 2.4). It arrives with milestone 4.
+
+### Enforcement in the proxy (the delicate part)
+
+The block happens on the **request** direction, before forwarding:
+
+- `pump`'s inspect callback now returns a `bool`: for the request direction it
+  decides whether to forward. `handleRequest` parses the line; for a `tools/call`
+  on the deny-list it returns `false` (do not forward), and instead synthesizes a
+  JSON-RPC error response (`code -32000`, a message naming the tool and the
+  deny-list) straight back to the client. An allowed call is remembered for
+  correlation and forwarded, exactly as in milestone 2.
+- **The client stream now has two writers.** The server->client `pump` writes
+  server responses; the deny path writes the error from the *other* goroutine.
+  A `syncWriter` (a mutex around the client `io.Writer`) serializes them. Every
+  proxy write is one full line, so serialized writes are also atomic per message
+  — no interleaving. This is the Art. 3.2 concurrency guarantee; `-race` proves
+  it.
+- **Wire transparency (Art. 1.3) is preserved for everything not blocked.** The
+  deny error is the single message on the client stream that Ganimedes authors
+  rather than forwards, and it is exactly the documented policy exception ("except
+  where a policy deliberately blocks or pauses a call"). A blocked request is
+  never forwarded, so the server's view stays consistent (it never sees the call
+  and never answers it).
+- **Audit from both directions.** A denied call is appended with `decision=deny`
+  from the request goroutine (there is no server response to wait for); allowed
+  calls are still appended from the response goroutine. The `audit.Logger` mutex
+  serializes the chain across both (see the §4 update). Enforcement does not
+  depend on auditing: with `log == nil`, a denied call is still blocked.
+
+### Config / command precedence (CLI)
+
+`ganimedes run [--config <path>] [--log <path>] -- <server-cmd> [args]`. The
+server command may come from the config file or the `--` tail; when both give
+one, the **explicit command line wins**. The deny-list comes from `--config`.
+With no `--config` and no deny rules, `run` is milestone-2 behavior (audit-only
+passthrough).
+
+## 7. Milestone 3 task list
+
+Status: **deny-list core code complete** (2026-07-26). The `scan` command and the
+audit RFC 8785 + Ed25519 upgrade are scoped with this milestone but not yet done
+(see [`DESIGN.md`](DESIGN.md) §5, §7).
+
+1. ✅ **`internal/config`**: JSON `Load`, `Deny` field, `DisallowUnknownFields`,
+   trailing-data rejection. Tests cover full/deny-only/typo/malformed/trailing/
+   missing (coverage 100%).
+2. ✅ **`internal/policy`**: `Engine`, `New`, `Decide` (Allow/Deny), default-allow,
+   nil-safe. Table-driven tests, including case-sensitivity and no
+   substring/prefix matching (coverage 100%).
+3. ✅ **`internal/proxy`**: request-side policy check, block-and-inject with a
+   `syncWriter`, deny audit with `decision=deny`. Tests cover a blocked call
+   (client gets the error, server never sees it, both attempts audited and the
+   chain verifies) and a block with `log == nil` (coverage ~82%).
+4. ✅ **`internal/cli`**: `run --config`, command/deny precedence, and — closing
+   the milestone-2 gap flagged in [`TESTING.md`](TESTING.md) — full unit coverage
+   of dispatch, flag parsing, exit codes, and `verify` (coverage ~94%).
+5. ⏳ **Manual smoke** (user-driven): wrap a real MCP server with a `--config`
+   deny-list, confirm a blocked tool returns the error to the agent while allowed
+   tools work, and `verify` shows the deny entry. Runs in the user's environment.
+6. ⬜ **`scan` command** and **audit RFC 8785 + Ed25519 upgrade**: separately
+   tracked companions of this milestone (see `DESIGN.md`).

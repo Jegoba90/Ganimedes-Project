@@ -12,7 +12,7 @@ and every error returned by the real server is pure passthrough, forwarded
 unchanged. Policy is **default-allow**: only tools on the deny-list or the
 approval-list are treated specially.
 
-## 1. Transparent passthrough
+## 1. Transparent passthrough ✅ *(implemented in v0)*
 
 The proxy forwards every message unchanged in both directions, including the
 `initialize` handshake. To the client, Ganimedes looks exactly like the real
@@ -42,7 +42,7 @@ sequenceDiagram
     G-->>C: result (forwarded, id=1)
 ```
 
-## 2. Audit log
+## 2. Audit log ✅ *(implemented in v0)*
 
 Same passthrough, plus a side effect: every `tools/call` and its result are
 appended to the hash-chained log. The client sees nothing different.
@@ -62,11 +62,14 @@ sequenceDiagram
     G-->>C: result (forwarded, id=7)
 ```
 
-## 3. Deny-list
+## 3. Deny-list ✅ *(implemented in v0)*
 
 Policy is checked by tool name. An allowed call flows through like diagram 2;
 a denied call never reaches the real server. Either way, Ganimedes records the
-attempt.
+attempt. The denied call gets a JSON-RPC error (`code -32000`) synthesized by
+Ganimedes; it is the one message on the client-facing stream that did not come
+from the real server (the deliberate, documented policy exception to
+Constitution Art. 1.3).
 
 ```mermaid
 sequenceDiagram
@@ -92,7 +95,7 @@ sequenceDiagram
     end
 ```
 
-## 4. Human-in-the-loop
+## 4. Human-in-the-loop ⬜ *(planned, milestone 4)*
 
 A flagged call pauses. A human reviews it on the local approval page. The
 result branches on approve, reject, or timeout. The approval timeout is

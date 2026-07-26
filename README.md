@@ -1,4 +1,4 @@
-<p align="center">
+	<p align="center">
   <img src="assets/ganimedes-title.svg" alt="Ganimedes" width="384">
 </p>
 
@@ -54,7 +54,7 @@ It does three things, and nothing more:
 1. **Tamper-evident audit.** Every tool call (arguments and result) is recorded
    in a hash-chained log, so you can answer "what did my agent actually do?" and
    prove the log was not altered after the fact.
-2. **Deny-list policy.** Simple YAML rules. Block `payment.execute` and
+2. **Deny-list policy.** Simple JSON rules. Block `payment.execute` and
    `database.delete`, allow the rest. Deterministic, readable, no surprises.
 3. **Human-in-the-loop.** Flagged tools pause and require explicit approval
    before they run. Deterministic rules, no ML.
@@ -77,7 +77,7 @@ same four pillars, each earned by real adoption before it is built:
 |------------|---------------------------------|---------------|--------------------------------|
 | Identity   | Who is the agent?               | -             | Agent identity and ownership   |
 | Capability | What can it do?                 | Deny-list     | Fine-grained capabilities      |
-| Policy     | What should it do right now?    | YAML rules    | Policy engine + risk scoring   |
+| Policy     | What should it do right now?    | JSON rules    | Policy engine + risk scoring   |
 | Proof      | Can we prove what it did?       | Hash-chain    | Verifiable audit trail         |
 
 ## Stack
@@ -89,8 +89,9 @@ same four pillars, each earned by real adoption before it is built:
 | MCP transport  | stdio, JSON-RPC 2.0, newline-delimited JSON           | in use  |
 | CLI            | hand-rolled subcommands, no framework                 | in use  |
 | Packaging      | `go build` -> single static binary, no runtime needed | in use  |
-| Config format  | YAML                                                  | planned |
+| Config format  | JSON                                                  | in use  |
 | Audit log      | JSONL file, SHA-256 hash chain                        | in use  |
+| Audit signing  | RFC 8785 canonical JSON + Ed25519 signatures          | planned |
 | Approval UI    | minimal HTML page served on localhost via `net/http`  | planned |
 
 No frontend framework: the only UI is a small local approval page served

@@ -109,9 +109,11 @@ func (p payload) hash() (string, error) {
 
 // Logger appends entries to one append-only, hash-chained JSONL file. It is
 // safe for concurrent use: Append serializes writers under a mutex so the chain
-// advances one entry at a time. In the proxy only a single goroutine (the
-// server->client direction, where results arrive) ever calls Append, but the
-// mutex keeps Logger correct as a standalone component regardless.
+// advances one entry at a time. Since milestone 3 both proxy directions call
+// Append — the server->client goroutine records allowed calls when their result
+// arrives, and the client->server goroutine records a denied call the moment it
+// is blocked — so the mutex is what serializes the chain (not a single-writer
+// property). CI's -race build proves there is no data race.
 type Logger struct {
 	mu       sync.Mutex
 	f        *os.File

@@ -1,6 +1,6 @@
 # 🏛️ Ganimedes Technical Constitution (CTG-2026)
 
-**Version:** 1.0 | **Stack:** Go (stdlib only) | **Focus:** Transparency, Fail-Closed Security & Verifiable Audit
+**Version:** 1.0.1 | **Stack:** Go (stdlib only) | **Focus:** Transparency, Fail-Closed Security & Verifiable Audit
 
 This document defines the immutable laws of the code. Every pull request must
 comply with these articles.
@@ -137,8 +137,13 @@ operational procedure live in sibling documents of mandatory consultation.
 - **Rule:** all tests run under the race detector (`-race`) on every platform that
   supports it in CI. Zero tolerance for data races.
 - **Ordered audit writes:** the hash chain requires strictly ordered appends, so
-  audit writes are serialized through a single writer (channel or mutex), never
-  performed concurrently from both proxy directions.
+  audit writes are serialized through a single serialization point — a channel or
+  a mutex. *(Clarified in 1.0.1:* milestone 3 appends from **both** proxy
+  directions — the response side records allowed calls, the request side records
+  a blocked call the instant it is denied — and the `audit.Logger` mutex is that
+  serialization point, so no two appends ever run concurrently. The requirement
+  is serialization, not a single writer goroutine; `-race` in CI proves no data
+  race.*)*
 
 ### 3.3. Transparent Passthrough of Non-Inspected Traffic
 

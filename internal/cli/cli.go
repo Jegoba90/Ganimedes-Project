@@ -65,16 +65,23 @@ func Run(args []string) int {
 	}
 }
 
+// usageRun is the one-line usage for the run subcommand.
+const usageRun = "run: usage: ganimedes run [--config <path>] [--log <path>] -- <server-command> [args...]"
+
 // runCommand implements
 //
-//	ganimedes run [--log <path>] -- <server-command> [args...]
+//	ganimedes run [--config <path>] [--log <path>] -- <server-command> [args...]
 //
-// It wraps the named MCP server, proxying the client's stdio (os.Stdin/
-// os.Stdout) to and from it and appending every tools/call to the audit log. A
-// leading "--" separates Ganimedes' own flags from the wrapped command, so the
-// server's arguments never collide with ours.
+// It wraps an MCP server, proxying the client's stdio (os.Stdin/os.Stdout) to
+// and from it, blocking any tools/call on the deny-list, and appending every
+// tools/call to the audit log. A leading "--" separates Ganimedes' own flags
+// from the wrapped command, so the server's arguments never collide with ours.
+//
+// The server command may come from --config or from the "--" tail; when both
+// give one, the explicit command line wins. The deny-list comes from --config.
 func runCommand(args []string) int {
 	logPath := defaultLogPath
+	configPath := ""
 
 	// Hand-rolled flag parsing (no flag package) so the "--" boundary with the
 	// wrapped command stays explicit. Only flags before "--" are ours.
@@ -91,12 +98,34 @@ func runCommand(args []string) int {
 			logPath, args = args[1], args[2:]
 			continue
 		}
+		if args[0] == "--config" {
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "run: --config needs a path")
+				return 2
+			}
+			configPath, args = args[1], args[2:]
+			continue
+		}
 		// First non-flag token: the wrapped command starts here.
 		break
 	}
 
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "run: usage: ganimedes run [--log <path>] -- <server-command> [args...]")
+	// Start from the config file (if any) for the deny-list and any command it
+	// specifies, then let an explicit command line override the command.
+	var cfg config.Config
+	if configPath != "" {
+		c, err := config.Load(configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "run: %v\n", err)
+			return 1
+		}
+		cfg = c
+	}
+	if len(args) > 0 {
+		cfg.Command, cfg.Args = args[0], args[1:]
+	}
+	if cfg.Command == "" {
+		fmt.Fprintln(os.Stderr, usageRun)
 		return 2
 	}
 
@@ -107,7 +136,6 @@ func runCommand(args []string) int {
 	}
 	defer log.Close()
 
-	cfg := config.Config{Command: args[0], Args: args[1:]}
 	if err := proxy.Run(cfg, os.Stdin, os.Stdout, log); err != nil {
 		fmt.Fprintf(os.Stderr, "run: %v\n", err)
 		return 1
@@ -155,7 +183,7 @@ Usage:
   ganimedes <command> [flags]
 
 Commands:
-  run       Wrap an MCP server: ganimedes run [--log <path>] -- <server-cmd> [args]
+  run       Wrap an MCP server: ganimedes run [--config <path>] [--log <path>] -- <server-cmd> [args]
   verify    Check the integrity of the audit log: ganimedes verify [path]
   init      Scaffold a config file (not implemented yet)
   version   Print the version

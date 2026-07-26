@@ -104,6 +104,175 @@ func TestRun_AuditsToolCalls(t *testing.T) {
 	}
 }
 
+// TestRun_DeniesBlockedTool checks the milestone 3 behavior: a tools/call to a
+// tool on the deny-list is blocked (the client gets a JSON-RPC error, the server
+// never sees it and never produces a result for it), while a call to an allowed
+// tool flows through like milestone 2. Both attempts are recorded: the blocked
+// one with decision=deny, the allowed one with decision=allow.
+func TestRun_DeniesBlockedTool(t *testing.T) {
+	t.Setenv("GO_WANT_MCP_SERVER", "1")
+
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	log, err := audit.Open(logPath, "test-session")
+	if err != nil {
+		t.Fatalf("audit.Open: %v", err)
+	}
+
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe_tool","arguments":{"q":"ok"}}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dangerous_tool","arguments":{"scope":"prod"}}}` + "\n"
+	in := strings.NewReader(req)
+	var out bytes.Buffer
+
+	cfg := config.Config{
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestHelperMCPServer"},
+		Deny:    []string{"dangerous_tool"},
+	}
+	if err := Run(cfg, in, &out, log); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("log.Close: %v", err)
+	}
+
+	got := parseResponses(t, out.Bytes())
+
+	// id=1 (allowed): the server's result reached the client.
+	if r, ok := got["1"]; !ok || r.Result == nil || r.Error != nil {
+		t.Errorf("id=1 want a server result, got %+v (ok=%v)", r, ok)
+	}
+	// id=2 (denied): the client got our JSON-RPC error, not a server result. A
+	// JSON-RPC error for this id can only be ours (the helper only ever emits
+	// results), which proves the server never handled the blocked call.
+	r2, ok := got["2"]
+	if !ok || r2.Error == nil || r2.Result != nil {
+		t.Fatalf("id=2 want a deny error and no result, got %+v (ok=%v)", r2, ok)
+	}
+	if !strings.Contains(string(r2.Error), "deny-list") {
+		t.Errorf("id=2 error = %s, want it to mention the deny-list", r2.Error)
+	}
+
+	// The audit log holds both attempts and the chain is intact.
+	res, err := audit.Verify(logPath)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !res.OK || res.Entries != 2 {
+		t.Fatalf("want 2 verified entries, got OK=%v entries=%d (%s)", res.OK, res.Entries, res.Reason)
+	}
+
+	entries := readEntries(t, logPath)
+	deny, allow := findByDecision(entries)
+	if deny == nil {
+		t.Fatal("no decision=deny entry in the log")
+	}
+	if deny.Tool != "dangerous_tool" || deny.Result != nil || deny.Error == nil {
+		t.Errorf("deny entry = %+v, want tool=dangerous_tool, no result, an error", deny)
+	}
+	if allow == nil {
+		t.Fatal("no decision=allow entry in the log")
+	}
+	if allow.Tool != "safe_tool" || allow.Result == nil {
+		t.Errorf("allow entry = %+v, want tool=safe_tool with a result", allow)
+	}
+}
+
+// TestRun_DeniesWithoutLog confirms enforcement does not depend on auditing: with
+// log == nil a denied tool is still blocked and the client still gets the error.
+func TestRun_DeniesWithoutLog(t *testing.T) {
+	t.Setenv("GO_WANT_MCP_SERVER", "1")
+
+	req := `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"blocked","arguments":{}}}` + "\n"
+	in := strings.NewReader(req)
+	var out bytes.Buffer
+
+	cfg := config.Config{
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestHelperMCPServer"},
+		Deny:    []string{"blocked"},
+	}
+	if err := Run(cfg, in, &out, nil); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	got := parseResponses(t, out.Bytes())
+	if r, ok := got["9"]; !ok || r.Error == nil || r.Result != nil {
+		t.Fatalf("id=9 want a deny error and no result, got %+v (ok=%v)", r, ok)
+	}
+}
+
+// rpcResp is one JSON-RPC response line as seen by the client.
+type rpcResp struct {
+	ID     json.RawMessage `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+}
+
+// parseResponses splits the client stream into JSON-RPC responses keyed by id
+// (the raw id bytes, trimmed), so a test can look up the response for a request.
+func parseResponses(t *testing.T, data []byte) map[string]rpcResp {
+	t.Helper()
+	out := make(map[string]rpcResp)
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var r rpcResp
+		if err := json.Unmarshal(line, &r); err != nil {
+			t.Fatalf("parse response line %q: %v", line, err)
+		}
+		out[string(bytes.TrimSpace(r.ID))] = r
+	}
+	return out
+}
+
+// logEntry is the subset of an audit entry the proxy tests assert on.
+type logEntry struct {
+	Tool     string          `json:"tool"`
+	Decision string          `json:"decision"`
+	Result   json.RawMessage `json:"result"`
+	Error    json.RawMessage `json:"error"`
+}
+
+// readEntries reads every audit entry from the JSONL log at path.
+func readEntries(t *testing.T, path string) []logEntry {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var entries []logEntry
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var e logEntry
+		if err := json.Unmarshal(line, &e); err != nil {
+			t.Fatalf("decode entry %q: %v", line, err)
+		}
+		entries = append(entries, e)
+	}
+	return entries
+}
+
+// findByDecision returns the first deny entry and the first allow entry (or nil
+// for whichever is absent), so a test need not assume their order in the log.
+func findByDecision(entries []logEntry) (deny, allow *logEntry) {
+	for i := range entries {
+		switch entries[i].Decision {
+		case "deny":
+			if deny == nil {
+				deny = &entries[i]
+			}
+		case "allow":
+			if allow == nil {
+				allow = &entries[i]
+			}
+		}
+	}
+	return deny, allow
+}
+
 // TestHelperProcess is not a real test. TestRun_ForwardsBothDirections
 // re-executes the test binary with GO_WANT_HELPER_PROCESS=1 to stand in for a
 // real MCP server: it reads lines from stdin and writes each back to stdout with
