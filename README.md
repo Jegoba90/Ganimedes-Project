@@ -14,33 +14,34 @@ permissions, tools, and the power to execute actions.
 Ganimedes sits between your agents and your systems, and answers four questions
 about every action an agent takes:
 
-```
-        AI AGENT
-           │
-           ▼
-      ┌──────────┐
-      │ GANIMEDES│
-      └────┬─────┘
-           │
-   ┌───────┼─────────┬─────────┐
-   ▼       ▼         ▼         ▼
-  WHO?    CAN?     SHOULD?   PROOF?
-   │       │         │         │
-identity capab.   policy+   verifiable
-                   risk       audit
-           │
-     ┌─────┴─────┐
-     ▼           ▼
-   ALLOW       BLOCK
-     │
-     ▼
-   SYSTEMS
-```
-
 - **WHO** is the agent? (identity)
 - What **CAN** it do? (capabilities)
 - What **SHOULD** it do right now? (policy and risk)
 - Can we **PROVE** what it did? (verifiable audit)
+
+In v0 that is one small gateway wrapping a single MCP server: allowed calls are
+forwarded, denied ones are blocked with an error, and every call is written to a
+tamper-evident log.
+
+```mermaid
+flowchart LR
+    A["Agent<br/>(MCP client)"]
+    S["MCP Server<br/>(real tools)"]
+
+    subgraph GAN["Ganimedes gateway (single Go binary)"]
+        POL{"Deny-list<br/>policy"}
+        AUD[("Hash-chained<br/>audit log")]
+    end
+
+    A -->|"tools/call"| POL
+    POL -->|"allowed"| S
+    S -->|"result"| A
+    POL -.->|"denied (JSON-RPC error)"| A
+    POL -->|"logged"| AUD
+
+    HITL["Human approval<br/>(planned)"]:::soon -.-> POL
+    classDef soon stroke-dasharray:5,opacity:0.55
+```
 
 ## Status
 
