@@ -2,8 +2,8 @@
   <img src="assets/ganimedes-title.svg" alt="Ganimedes" width="384">
 </p>
 
-> The control and security layer for autonomous AI agents.
-> We secure what AI agents **do**, not just what they know.
+> The governance and security layer for autonomous AI agents.
+> Control and prove what AI agents **do**, not just what they know.
 
 AI agents can now read data, call APIs, move money, deploy code, and take real
 actions inside company systems. They are getting autonomy faster than anyone can
@@ -42,6 +42,18 @@ flowchart LR
     HITL["Human approval<br/>(planned)"]:::soon -.-> POL
     classDef soon stroke-dasharray:5,opacity:0.55
 ```
+
+## Governance for agents, not a sandbox
+
+Ganimedes is **governance for AI agents**: know and prove what your agents did,
+and block the calls they should not make. The tamper-evident audit log is the
+core, and you can verify it offline; the deny-list and human approval are
+lightweight, deterministic guardrails on top.
+
+It sits at the MCP tool-call boundary. It is **not a sandbox**: it does not
+isolate processes, patch vulnerabilities, or stop an attacker who already
+controls the machine. It makes what an agent does **accountable and
+controllable**, and it never claims a guarantee it does not enforce.
 
 ## Status
 
