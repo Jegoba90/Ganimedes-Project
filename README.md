@@ -1,4 +1,4 @@
-	<p align="center">
+<p align="center">
   <img src="assets/ganimedes-logo.svg" alt="" height="56" align="middle">
   &nbsp;
   <img src="assets/ganimedes-title.svg" alt="Ganimedes" width="384" align="middle">
