@@ -20,6 +20,15 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    env:
+      # Build and test the way the product ships: a fully static, cgo-free
+      # binary (Constitution Art. 5.1, "single static binary, no runtime").
+      # This also fixes the macOS runner: crypto/x509 pulls cgo in on darwin,
+      # and the resulting cgo test binary is built without an LC_UUID load
+      # command, which the macOS dynamic linker refuses to run ("missing
+      # LC_UUID ... signal: abort trap"). CGO_ENABLED=0 uses Go's internal
+      # linker, which always emits LC_UUID.
+      CGO_ENABLED: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -38,11 +47,16 @@ jobs:
       - name: 🧪 Test (coverage, all platforms)
         run: go test ./... -cover
 
-      # The race detector needs cgo + a C compiler. Linux/macOS runners have
-      # one by default; the Windows runner does not. Cross-platform correctness
-      # is already covered above, so race runs everywhere except Windows.
-      - name: 🏁 Test (race detector)
-        if: runner.os != 'Windows'
+      # The race detector needs cgo + a C compiler. Run it on Linux only: cgo
+      # test binaries build and run cleanly there. Windows has no default C
+      # compiler, and a cgo binary on the macOS runner hits the LC_UUID/dyld
+      # issue noted above. Cross-platform functional coverage is already done by
+      # the cgo-free test step above; data races are OS-independent, so Linux
+      # race coverage catches them.
+      - name: 🏁 Test (race detector, Linux)
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: "1"
         run: go test ./... -race
 
   # --- LINT & FORMAT (single OS: text-content checks, no need to repeat 3x) ---
