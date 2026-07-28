@@ -93,7 +93,7 @@ same four pillars, each earned by real adoption before it is built:
 | Identity   | Who is the agent?               | -             | Agent identity and ownership   |
 | Capability | What can it do?                 | Deny-list     | Fine-grained capabilities      |
 | Policy     | What should it do right now?    | JSON rules    | Policy engine + risk scoring   |
-| Proof      | Can we prove what it did?       | Hash-chain    | Verifiable audit trail         |
+| Proof      | Can we prove what it did?       | Signed, verifiable log | External anchoring     |
 
 ## Stack
 
@@ -106,7 +106,7 @@ same four pillars, each earned by real adoption before it is built:
 | Packaging      | `go build` -> single static binary, no runtime needed | in use  |
 | Config format  | JSON                                                  | in use  |
 | Audit log      | JSONL file, SHA-256 hash chain                        | in use  |
-| Audit signing  | RFC 8785 canonical JSON + Ed25519 signatures          | planned |
+| Audit signing  | RFC 8785 canonical JSON + Ed25519 signatures          | in use  |
 | Approval UI    | minimal HTML page served on localhost via `net/http`  | planned |
 
 No frontend framework: the only UI is a small local approval page served

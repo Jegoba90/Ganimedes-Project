@@ -3,6 +3,8 @@ package audit
 import (
 	"bufio"
 	"bytes"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,21 +25,28 @@ type VerifyResult struct {
 	Reason   string // human-readable cause of the break, empty if OK
 }
 
-// Verify reads the JSONL log at path and checks its integrity: each entry is
-// re-hashed and compared to its stored hash (catches content edits), and each
-// entry's prev_hash is compared to the previous entry's hash (catches
-// reordering, insertion, or deletion of earlier entries).
+// Verify reads the JSONL log at path and checks its integrity against the public
+// key pub: each entry is re-canonicalized and (1) its stored hash is recomputed
+// and compared (catches content edits), (2) its Ed25519 signature is checked
+// against pub (catches entries forged or signed by a different key), and (3) its
+// prev_hash is compared to the previous entry's hash (catches reordering,
+// insertion, or deletion of earlier entries).
 //
 // Verify returns an error only for problems reading the file itself (missing
-// file, unreadable, malformed JSON on a line). A structurally sound file whose
-// chain does not hold is reported through VerifyResult.OK == false, not through
-// an error: a broken chain is a finding, not a failure to run.
+// file, unreadable, malformed JSON on a line) or an unusable key. A structurally
+// sound file whose chain or signatures do not hold is reported through
+// VerifyResult.OK == false, not through an error: a broken seal is a finding, not
+// a failure to run.
 //
 // Known limit (documented, not a bug): truncating entries from the END of the
 // file leaves a shorter but internally consistent chain, so Verify cannot detect
 // it without an external anchor. Edits and deletions anywhere before the end are
 // detected.
-func Verify(path string) (VerifyResult, error) {
+func Verify(path string, pub ed25519.PublicKey) (VerifyResult, error) {
+	if len(pub) != ed25519.PublicKeySize {
+		return VerifyResult{}, errors.New("audit: Verify requires a valid ed25519 public key")
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		// A missing log is a usage error worth surfacing directly ("there is
@@ -63,17 +72,27 @@ func Verify(path string) (VerifyResult, error) {
 			return fmt.Errorf("entry %d: not valid JSON: %w", pos, err)
 		}
 
-		// 1. Content check: does the stored hash still match the payload?
-		want, err := e.payload.hash()
+		// 1. Content check: canonicalize once, then confirm the stored hash still
+		// matches the payload.
+		c, err := e.payload.canonical()
 		if err != nil {
 			return fmt.Errorf("entry %d: %w", pos, err)
 		}
+		want := digest(c)
 		if e.Hash != want {
 			res.fail(pos, fmt.Sprintf("content was modified (hash mismatch: stored %s, recomputed %s)", short(e.Hash), short(want)))
 			return errStop
 		}
 
-		// 2. Chain check: does this entry link to the previous one?
+		// 2. Signature check: was this entry signed by the trusted key over those
+		// same canonical bytes? Catches a forged entry re-hashed to look
+		// self-consistent but signed with a different (or no) key.
+		if !verifySignature(pub, c, e.Sig) {
+			res.fail(pos, "signature does not verify (entry forged or signed by another key)")
+			return errStop
+		}
+
+		// 3. Chain check: does this entry link to the previous one?
 		if e.PrevHash != prevHash {
 			reason := fmt.Sprintf("broken chain link (prev_hash %s, expected %s)", short(e.PrevHash), short(prevHash))
 			if pos == 1 {
@@ -83,7 +102,7 @@ func Verify(path string) (VerifyResult, error) {
 			return errStop
 		}
 
-		// 3. Sequence check: an extra guard that seq counts 1,2,3... A gap
+		// 4. Sequence check: an extra guard that seq counts 1,2,3... A gap
 		// usually shows up as a chain break above first; this catches an entry
 		// whose seq was tampered with while keeping the hash self-consistent.
 		if e.Seq != prevSeq+1 {
@@ -106,6 +125,18 @@ func Verify(path string) (VerifyResult, error) {
 		res.OK = true
 	}
 	return res, nil
+}
+
+// verifySignature reports whether sigB64 is a valid Ed25519 signature by pub over
+// canonical. A signature that is not valid base64 or the wrong length is treated
+// as a failed check (not a crash): a malformed signature is exactly what a
+// tamperer would leave, so it must fail closed, not error out.
+func verifySignature(pub ed25519.PublicKey, canonical []byte, sigB64 string) bool {
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil || len(sig) != ed25519.SignatureSize {
+		return false
+	}
+	return ed25519.Verify(pub, canonical, sig)
 }
 
 // fail records the first broken entry. Later calls are ignored so BadEntry/Reason

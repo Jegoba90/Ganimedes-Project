@@ -4,21 +4,29 @@
 // as one Entry. Each Entry carries the SHA-256 hash of the previous Entry
 // (prev_hash) and its own hash covers that link, so the file forms a chain:
 // editing, reordering, or deleting any past Entry breaks every hash after it,
-// which Verify (see verify.go) detects.
+// which Verify (see verify.go) detects. On top of the chain, every Entry is
+// Ed25519-signed, so a verifier can also prove the entries were produced by the
+// holder of a specific key, not just that history was not edited.
 //
-// What the chain does and does not give you: it makes *after-the-fact edits*
-// to recorded history detectable. It does not stop someone who controls the
-// file from rewriting the whole chain from scratch, and it cannot detect that
-// entries were truncated from the very end (there is no external anchor in v0;
-// publishing the head hash somewhere is a later feature). The honest claim is
-// "you can prove the log was not altered after the fact", which is exactly what
-// the README promises.
+// The digest and signature are taken over the RFC 8785 (JSON Canonicalization
+// Scheme) form of the entry's payload (see canonical.go), so the exact bytes
+// that were hashed and signed can be reproduced by any RFC 8785 implementation
+// from the stored JSON plus the public key. That is what makes the log
+// independently verifiable offline (Constitution Art. 2.3).
 //
-// Design decisions (from docs/DESIGN.md, decided 2026-07-23):
+// What the chain does and does not give you: it makes *after-the-fact edits* to
+// recorded history detectable, and the signature proves authorship. Neither
+// stops someone who controls BOTH the log and the signing key from rewriting the
+// whole chain from scratch, and neither detects entries truncated from the very
+// end (there is no external anchor in v0; publishing the head hash somewhere is a
+// later feature). The honest claim is "you can prove the log was not altered
+// after the fact, and that it was signed by this key" (Art. 2.4).
+//
+// Design decisions (from docs/DESIGN.md, decided 2026-07-23 and 2026-07-24):
 //   - Each Entry stores the FULL call (tool, arguments, result) so the log is
 //     useful for debugging ("what did my agent do?"), not just verification.
-//   - The hash is computed over the canonical JSON of the Entry-minus-its-hash,
-//     including prev_hash.
+//   - The hash and signature are computed over the RFC 8785 canonical JSON of
+//     the Entry-minus-its-seal (everything but hash and sig), including prev_hash.
 //   - Storage is a JSONL file; the DB comes later, if ever.
 //
 // This package knows nothing about JSON-RPC or MCP framing: the proxy parses
@@ -27,10 +35,13 @@
 package audit
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -38,10 +49,10 @@ import (
 )
 
 // Decision records why a call was allowed to reach the real server (or not).
-// v0 milestone 2 has no policy engine yet, so every recorded call is
-// DecisionAllow; the deny/approval values arrive with the policy engine in
-// later milestones. They live here, next to the on-disk format, so the field's
-// vocabulary has a single source of truth.
+// Allow (milestone 2) and Deny (milestone 3, the deny-list) are both in use; the
+// approval values arrive with human-in-the-loop (milestone 4). They live here,
+// next to the on-disk format, so the field's vocabulary has a single source of
+// truth.
 const (
 	DecisionAllow    = "allow"    // default: no policy blocked it (milestone 2)
 	DecisionDeny     = "deny"     // milestone 3: blocked by the deny-list
@@ -78,33 +89,47 @@ type payload struct {
 	PrevHash string          `json:"prev_hash"`        // hash of the previous entry (chain link)
 }
 
-// Entry is one audited tool call as stored on disk: a payload plus the SHA-256
-// hash that seals it. It is written as a single JSON object per line (JSONL).
+// Entry is one audited tool call as stored on disk: a payload plus its seal, the
+// hex SHA-256 hash and the base64 Ed25519 signature. It is written as a single
+// JSON object per line (JSONL).
 //
 // Args, Result, and Error are kept as json.RawMessage so the exact JSON that
-// crossed the wire is preserved rather than being decoded and re-encoded
-// through Go types (which could drop or reshape fields). The JSON encoder
-// compacts each RawMessage deterministically when marshaling, so the same input
-// always produces the same stored bytes and therefore the same hash.
+// crossed the wire is preserved rather than being decoded and re-encoded through
+// Go types (which could drop or reshape fields). The verbatim bytes stay in the
+// file; canonicalization (below) is applied only when computing the seal.
 type Entry struct {
 	payload
 	Hash string `json:"hash"`
+	Sig  string `json:"sig"`
 }
 
-// hash computes an Entry's seal: the hex SHA-256 of the canonical JSON of its
-// payload (everything but the hash). "Canonical" here means "deterministically
-// serialized": payload is a struct with no maps, so json.Marshal emits its
-// fields in a fixed order, and it compacts the RawMessage fields, so the same
-// payload always yields identical bytes. This is byte-canonicalization of the
-// stored record, not semantic JSON canonicalization: it seals exactly what was
-// recorded, which is what tamper-evidence needs.
-func (p payload) hash() (string, error) {
+// canonical returns the RFC 8785 canonical JSON of the payload (everything but
+// the hash and signature). It is the single byte sequence the digest and the
+// signature are both taken over, and the single thing Verify re-derives to check
+// them, so writer and verifier agree by construction (Constitution Art. 2.3).
+//
+// The payload is marshaled with the standard encoder first (which embeds the
+// verbatim Args/Result/Error), then run through the canonicalizer, so nested
+// values inside the call are canonicalized too, not just the outer fields.
+func (p payload) canonical() ([]byte, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
-		return "", fmt.Errorf("hashing audit entry: %w", err)
+		return nil, fmt.Errorf("marshaling audit entry: %w", err)
 	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), nil
+	c, err := canonicalizeJSON(b)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalizing audit entry: %w", err)
+	}
+	return c, nil
+}
+
+// digest is the hex SHA-256 of canonical payload bytes: the chain link stored as
+// an entry's hash and referenced by the next entry's prev_hash. Append and Verify
+// both call it on the bytes returned by canonical, so the two agree by
+// construction.
+func digest(canonical []byte) string {
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
 }
 
 // Logger appends entries to one append-only, hash-chained JSONL file. It is
@@ -117,6 +142,7 @@ func (p payload) hash() (string, error) {
 type Logger struct {
 	mu       sync.Mutex
 	f        *os.File
+	priv     ed25519.PrivateKey // signs every entry (Art. 2.3)
 	session  string
 	seq      uint64 // sequence number of the last entry written
 	prevHash string // hash of the last entry written (next entry links to it)
@@ -125,9 +151,15 @@ type Logger struct {
 // Open opens the log file at path for appending, creating it if it does not
 // exist. If the file already holds entries, Open reads the last one so new
 // entries continue its chain (seq keeps counting, prev_hash keeps linking)
-// instead of forking a second chain in the same file. session labels every
-// entry this Logger writes; use NewSession to generate one per proxy run.
-func Open(path, session string) (*Logger, error) {
+// instead of forking a second chain in the same file. session labels every entry
+// this Logger writes; use NewSession to generate one per proxy run. priv signs
+// every entry and is required: a Logger never writes unsigned records, so a nil
+// key is a programming error, reported rather than silently downgraded.
+func Open(path, session string, priv ed25519.PrivateKey) (*Logger, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil, errors.New("audit: Open requires a valid ed25519 signing key")
+	}
+
 	// Resume from any existing content first, so a re-opened log continues its
 	// chain rather than restarting it. A missing file is not an error here: it
 	// just means we start a fresh chain.
@@ -144,7 +176,7 @@ func Open(path, session string) (*Logger, error) {
 		return nil, fmt.Errorf("opening audit log %q: %w", path, err)
 	}
 
-	return &Logger{f: f, session: session, seq: seq, prevHash: prev}, nil
+	return &Logger{f: f, priv: priv, session: session, seq: seq, prevHash: prev}, nil
 }
 
 // Append records one completed tool call and returns the stored Entry.
@@ -171,11 +203,14 @@ func (l *Logger) Append(tool string, args, result, rpcErr json.RawMessage, decis
 		PrevHash: l.prevHash,
 	}
 
-	h, err := p.hash()
+	// Canonicalize once, then both seal it (hash for the chain) and sign it
+	// (Ed25519 for authenticity) over the exact same bytes.
+	c, err := p.canonical()
 	if err != nil {
 		return Entry{}, err
 	}
-	e := Entry{payload: p, Hash: h}
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(l.priv, c))
+	e := Entry{payload: p, Hash: digest(c), Sig: sig}
 
 	line, err := json.Marshal(e)
 	if err != nil {
@@ -188,7 +223,7 @@ func (l *Logger) Append(tool string, args, result, rpcErr json.RawMessage, decis
 
 	// Only now, after the entry is on disk, advance the chain.
 	l.seq = p.Seq
-	l.prevHash = h
+	l.prevHash = e.Hash
 	return e, nil
 }
 

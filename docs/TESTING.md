@@ -44,9 +44,10 @@ a mocking library.
 
 | Package | Coverage | Notes |
 |---|---|---|
-| `internal/audit` | 79.3% | append/verify, content-edit + deletion detection, chain resume, error responses, null args |
+| `internal/audit` | 81.7% | append/verify, content-edit + deletion detection, chain resume, error responses, null args; RFC 8785 canonicalization (spec §3.2.3 vectors, ES6 numbers, key order) and Ed25519 signing (valid, forged-and-re-signed, wrong-key) + keypair generate/load round-trip |
 | `internal/proxy` | 82.4% | passthrough, tools/call correlation + audit append, and the M3 deny path (blocked call errored + audited, block without a log) via the in-process helper-process pattern |
-| `internal/cli` | 94.2% | dispatch + exit codes, `run` flag parsing (`--log`, `--config`, `--`, command precedence), `verify` intact/tampered/missing, `init`/usage paths |
+| `internal/cli` | 93.6% | dispatch + exit codes, `run` flag parsing (`--log`, `--config`, `--signing-key`, `--`, command precedence), `verify` intact/tampered/missing/`--pubkey` resolution, `scan` usage/config/nonexistent/happy-path, `init`/usage paths |
+| `internal/scan` | 86.8% | keyword matching + its no-self-overlap invariant, the `initialize`+`tools/list` handshake against an in-memory server (happy path, tools/list error, premature EOF), an end-to-end scan against a subprocess stand-in, and report rendering |
 | `internal/config` | 100% | JSON `Load`: full, deny-only, unknown-field rejection, malformed, trailing data, missing file |
 | `internal/policy` | 100% | `Decide` decision table: deny-list hits, default-allow, case-sensitivity, nil engine |
 
@@ -64,9 +65,11 @@ wrong flag wiring in `main.go`/`cli.go`, `os.Exit` codes, stdio actually
 connected end to end through two real process boundaries instead of in-memory
 `io.Reader`/`io.Writer`.
 
-This formalizes, as a repeatable test, what was checked by hand last session
-(build `ganimedes.exe` + a throwaway fake-server, pipe JSON-RPC through `run
---log`, inspect the log, tamper it, confirm `verify` catches it and exits 1).
+This formalizes, as a repeatable test, what has been checked by hand each sprint.
+Most recently (2026-07-28) the full path was smoked against the real binary: `run`
+generated a signing key and wrote a signed entry, `verify` reported OK, a content
+edit was caught as a hash mismatch, and verifying with the wrong public key
+failed — all exercised manually, including the RFC 8785 + Ed25519 seal.
 
 **Tool:** a Go test in a new `cmd/ganimedes` test file (or a small
 `internal/e2e` test package) using `os/exec` to invoke the **compiled binary**
@@ -113,6 +116,8 @@ deliberately rather than incidentally.
 |---|---|
 | Content edit breaks the hash chain | ✅ `TestVerify_DetectsContentEdit` |
 | Deleting an entry breaks the chain | ✅ `TestVerify_DetectsDeletion` |
+| Forged entry: content edited, hash recomputed, re-signed with another key | ✅ `TestVerify_DetectsForgedEntry` |
+| Log verified against the wrong public key | ✅ `TestVerify_WrongKey` |
 | Chain resumes correctly across log reopen | ✅ `TestResumeChain` |
 | Error responses (no result) recorded correctly | ✅ `TestAppend_RecordsErrorResponses` |
 | Malformed/garbage JSON-RPC line (not valid JSON) | ⬜ not tested — `pump`/`recordRequest`/`recordResponse` silently ignore unparseable lines by design, but there's no test proving that behavior (forward, don't crash, don't audit) |

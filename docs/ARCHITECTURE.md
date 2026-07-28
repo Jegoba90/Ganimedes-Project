@@ -287,8 +287,9 @@ passthrough).
 
 ## 7. Milestone 3 task list
 
-Status: **deny-list core code complete** (2026-07-26). The `scan` command and the
-audit RFC 8785 + Ed25519 upgrade are scoped with this milestone but not yet done
+Status: **deny-list core, `scan`, and the audit RFC 8785 + Ed25519 upgrade are
+all code-complete** (deny 2026-07-26; scan and the seal upgrade 2026-07-28). Only
+the user-driven manual smoke (item 5) remains before this milestone is fully done
 (see [`DESIGN.md`](DESIGN.md) §5, §7).
 
 1. ✅ **`internal/config`**: JSON `Load`, `Deny` field, `DisallowUnknownFields`,
@@ -307,5 +308,18 @@ audit RFC 8785 + Ed25519 upgrade are scoped with this milestone but not yet done
 5. ⏳ **Manual smoke** (user-driven): wrap a real MCP server with a `--config`
    deny-list, confirm a blocked tool returns the error to the agent while allowed
    tools work, and `verify` shows the deny entry. Runs in the user's environment.
-6. ⬜ **`scan` command** and **audit RFC 8785 + Ed25519 upgrade**: separately
-   tracked companions of this milestone (see `DESIGN.md`).
+6. ✅ **`internal/scan` + `ganimedes scan`**: spawns the wrapped server, runs the
+   `initialize` + `tools/list` handshake, and flags each tool by risky keyword
+   (reporting-only, stdlib-only, deterministic, no ML). Tests cover keyword
+   matching and its no-self-overlap invariant, the handshake against an in-memory
+   server (happy path, tools/list error, premature EOF), an end-to-end scan
+   against a subprocess stand-in, and rendering (coverage ~87%).
+7. ✅ **Audit RFC 8785 + Ed25519 upgrade**: `internal/audit/canonical.go` (a
+   hand-rolled, stdlib-only RFC 8785 canonicalizer, validated against the spec's
+   §3.2.3 example) plus `keys.go` (Ed25519 keypair generate/load as PEM). Every
+   entry's hash and signature are taken over the canonical payload; `verify`
+   checks the signature against the public key alongside the hash and chain.
+   Keys auto-generate on first `run` (0600), overridable via `--signing-key`/
+   `GANIMEDES_SIGNING_KEY`; `verify` takes `--pubkey` for offline checks. Tests
+   cover the RFC vectors, a forged-and-re-signed entry, the wrong key, and the
+   key round-trip (audit coverage ~82%, cli ~94%).

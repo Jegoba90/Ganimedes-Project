@@ -3,6 +3,8 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +15,17 @@ import (
 	"github.com/Jegoba90/Ganimedes-Project/internal/audit"
 	"github.com/Jegoba90/Ganimedes-Project/internal/config"
 )
+
+// testKeypair generates an Ed25519 keypair for driving the signed audit log in a
+// test.
+func testKeypair(t *testing.T) (ed25519.PrivateKey, ed25519.PublicKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	return priv, pub
+}
 
 // TestRun_ForwardsBothDirections checks that Run transparently pipes the
 // client's input to the server and the server's output back to the client with
@@ -50,7 +63,8 @@ func TestRun_AuditsToolCalls(t *testing.T) {
 	t.Setenv("GO_WANT_MCP_SERVER", "1")
 
 	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
-	log, err := audit.Open(logPath, "test-session")
+	priv, pub := testKeypair(t)
+	log, err := audit.Open(logPath, "test-session", priv)
 	if err != nil {
 		t.Fatalf("audit.Open: %v", err)
 	}
@@ -76,7 +90,7 @@ func TestRun_AuditsToolCalls(t *testing.T) {
 	}
 
 	// Exactly one entry (the tools/call), and it must verify.
-	res, err := audit.Verify(logPath)
+	res, err := audit.Verify(logPath, pub)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -113,7 +127,8 @@ func TestRun_DeniesBlockedTool(t *testing.T) {
 	t.Setenv("GO_WANT_MCP_SERVER", "1")
 
 	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
-	log, err := audit.Open(logPath, "test-session")
+	priv, pub := testKeypair(t)
+	log, err := audit.Open(logPath, "test-session", priv)
 	if err != nil {
 		t.Fatalf("audit.Open: %v", err)
 	}
@@ -153,7 +168,7 @@ func TestRun_DeniesBlockedTool(t *testing.T) {
 	}
 
 	// The audit log holds both attempts and the chain is intact.
-	res, err := audit.Verify(logPath)
+	res, err := audit.Verify(logPath, pub)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}

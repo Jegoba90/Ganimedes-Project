@@ -33,7 +33,7 @@ instead of at the server directly. That is the adoption win.
 | # | Component | What it does | Difficulty |
 |---|-----------|--------------|-----------|
 | 1 | **Proxy core (the pipe)** | Reads JSON-RPC from the client, spawns the real server, forwards both directions, intercepts `tools/call`, correlates request/response by `id`, passes the `initialize` handshake through. | **High.** Foundation and biggest risk: if it corrupts the protocol, nothing works. |
-| 2 | **Config loader** | YAML file: which server to wrap (command + args), deny rules, which tools require approval. | Low |
+| 2 | **Config loader** | JSON file: which server to wrap (command + args), deny rules, which tools require approval. | Low |
 | 3 | **Policy engine** | Given a `tools/call` (name + args), decides ALLOW / DENY / REQUIRE_APPROVAL. v0: match by name, **default-allow** (anything not listed is allowed). Denied tools still appear in `tools/list` and are blocked on call. Deterministic, no ML. | Low |
 | 4 | **Human-in-the-loop** | When a tool requires approval: pause, show it to a human, wait for approve/reject, with timeout (no answer = deny). | Medium-high (UX) |
 | 5 | **Hash-chained, signed audit log** | Append-only log. Each entry stores the **full call** (tool, args, result) plus decision, timestamp, session, and `prev_hash`. `entry hash = SHA-256(RFC 8785 canonical JSON of the entry)`, and each entry is **Ed25519-signed** (decided 2026-07-24, see §7). Full content serves debugging; the chain + signature give tamper-evidence *and* authenticity. Plus a `verify` command. | Low-medium |
@@ -54,12 +54,12 @@ instead of at the server directly. That is the adoption win.
 
 ## 5. Build order
 
-Each step is a checkpoint that works on its own. **Status (2026-07-26): steps 1
-and 2 are shipped and on `main`; step 3's deny-list core (config loader + policy
-engine + proxy enforcement) is implemented; step 4, plus two step-3 companions
-(the `scan` command and the audit RFC 8785 + Ed25519 upgrade), are still
-pending.** See [`ARCHITECTURE.md`](ARCHITECTURE.md) §3, §5, and §6 for the
-per-milestone task lists.
+Each step is a checkpoint that works on its own. **Status (2026-07-28): steps 1
+and 2 are shipped and on `main`; step 3 (deny-list core) is implemented, and both
+its companions are now built too, the `scan` command and the audit RFC 8785 +
+Ed25519 upgrade; step 4 (human-in-the-loop) is the only one still pending.** See
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §3, §5, and §6 for the per-milestone task
+lists.
 
 1. ✅ **Transparent passthrough.** The proxy only forwards. Proves we can sit in
    the middle without breaking MCP. *Milestone: the agent works exactly as
@@ -72,10 +72,11 @@ per-milestone task lists.
    `tools/call` is blocked before it reaches the server, the client gets a
    JSON-RPC error (`code -32000`), and the attempt is audited with
    `decision=deny`. Config is a JSON file (`--config`, Art. 1.1). Two companions
-   scoped with this step are **still pending**: the **`scan` command** (§3, §7),
-   which tells you what's risky in a wrapped server before you write the deny
-   rules; and the **audit RFC 8785 + Ed25519 upgrade** (§7), which should cover
-   the new deny decisions before any release. See `TECH_DEBT.md` TD-2 for a
+   were scoped with this step, and both are now **done (2026-07-28)**: the
+   **`scan` command** (§3, §7), which tells you what's risky in a wrapped server
+   before you write the deny rules, and the **audit RFC 8785 + Ed25519 upgrade**
+   (§7), which now covers every deny decision the moment it is recorded. See
+   `TECH_DEBT.md` TD-2 for a
    real-world incident informing an optional rate/volume extension to this
    milestone (not implemented; see §6).
 4. ⬜ **Human-in-the-loop.** Approval for flagged tools. *Milestone: the
@@ -169,24 +170,35 @@ cheapest piece (audit) second.
   implementation, so it will need to be either hand-written (sorted map keys,
   spec-compliant number/string formatting) or, if any external code is used
   for it, run through the Art. 1.1 dependency-audit protocol first.
-- **What changes concretely (implementation deferred, not done yet):**
-  - `internal/audit`'s `payload.hash()` moves from "fixed struct field order"
-    to real key-sorted RFC 8785 canonical JSON.
-  - Each `Entry` gains a signature field alongside `hash` and `prev_hash`;
-    `Logger` needs a signing key; `Verify` gains a signature-check step
-    alongside the existing hash and chain-link checks.
-  - This changes the on-disk JSONL schema. Ganimedes has no external users
-    yet, so this is a pre-1.0 schema change, not a breaking change to a
-    shipped format — no migration path needed.
-- **Open sub-decisions (deliberately left for implementation time):** where
-  the signing key lives and how it is generated/rotated — a key readable
-  by whoever can read the log would undermine the guarantee, so this needs
-  real design, not a rushed default; and whether to hand-roll RFC 8785 or use
-  a small vetted implementation.
-- **Status:** ⬜ not implemented. Scheduled alongside milestone 3 rather than
-  as a standalone task, since the policy engine's own ALLOW/DENY/
-  REQUIRE_APPROVAL decisions should be covered by the same upgraded rigor from
-  the moment they start being recorded.
+- **What changed concretely (done 2026-07-28):**
+  - `internal/audit`'s `payload.hash()` now computes over real key-sorted
+    RFC 8785 canonical JSON, via a hand-rolled canonicalizer (`canonical.go`)
+    that sorts object keys by UTF-16 code unit, applies ECMAScript number
+    formatting, and escapes strings per the spec. It is validated against the
+    RFC 8785 §3.2.3 worked example. The verbatim wire bytes of args/result/error
+    are still stored as-is; canonicalization is applied only to compute the seal.
+  - Each `Entry` gained a `sig` field alongside `hash` and `prev_hash`; `Logger`
+    holds an Ed25519 signing key; `Verify` gained a signature-check step
+    alongside the hash and chain-link checks. Digest and signature are taken over
+    the same canonical bytes, so a third party can reproduce them offline.
+  - This changed the on-disk JSONL schema. Ganimedes has no external users yet,
+    so it was a pre-1.0 schema change, no migration path needed.
+- **Resolved sub-decisions (at implementation, 2026-07-28):**
+  - **Where the signing key lives:** auto-generate on first `run` into a 0600
+    PEM file (`ganimedes-signing.key`, PKCS#8), with the public half written
+    beside it (`.pub`, PKIX) for verifiers; overridable via `--signing-key` or
+    `GANIMEDES_SIGNING_KEY` for a key managed elsewhere (a secrets manager, a
+    separate volume). `verify` reads the public key from `--pubkey`, the default
+    `.pub`, or by deriving it from the private key. Rotation is not automated in
+    v0. Honest framing (Art. 2.4): where an attacker controls both the log and
+    the key, signing adds authenticity and defense-in-depth, not a new guarantee;
+    its teeth are provenance and verification where the private key never goes.
+  - **Hand-roll vs dependency:** hand-rolled, to stay inside the Zero-Dependency
+    Policy (Art. 1.1); `crypto/ed25519` and `crypto/x509` are stdlib.
+- **Status:** ✅ implemented 2026-07-28 (`internal/audit/canonical.go`,
+  `keys.go`, and the updated `audit.go`/`verify.go`). This closes the gap between
+  Art. 2.3's "canonical JSON" wording and the lighter milestone-2 byte-
+  canonicalization.
 
 ### Risk scanner (`ganimedes scan`): a pre-flight helper for the deny-list (decided 2026-07-24)
 
@@ -214,11 +226,16 @@ cheapest piece (audit) second.
   diagnostic/support command for an existing pillar (deny-list), not a new
   enforcement capability. The v0 scope stays three things; `scan` and
   `verify` are helpers around two of them.
-- **Status:** ⬜ not implemented. Sequenced just before milestone 3 (§5), since
-  its output is exactly the input a developer needs to write the deny-list.
-- **Open sub-decision, not yet resolved:** the exact keyword list, and
-  whether it lives as a hardcoded default or an editable list — deferred to
-  implementation time.
+- **Status:** ✅ implemented 2026-07-28 as `internal/scan` + the `ganimedes scan`
+  subcommand (§3, §5). Reporting-only, stdlib-only, deterministic; the server
+  handshake (`initialize` + `notifications/initialized` + `tools/list`) reuses
+  the same MCP framing the proxy core relies on, bounded by a scan-wide timeout
+  (Art. 3.4).
+- **Resolved at implementation (2026-07-28):** the keyword list is a **hardcoded
+  default** for v0, curated so no keyword is a substring of another (so a tool is
+  never double-flagged for the same match); matching is case-insensitive
+  substring matching over name + description. An **editable per-project list**
+  and word-boundary matching are noted as future refinements, not built.
 
 ### Human-in-the-loop timeout: configurable, default deny (decided 2026-07-23)
 
