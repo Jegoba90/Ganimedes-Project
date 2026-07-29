@@ -8,16 +8,35 @@
 > checked, never because it is expected to pass.
 
 **Current verdict (2026-07-29): NO-GO.** All four v0 milestones are code-complete
-and the local gate is green, but the milestone-4 work is not yet committed or
-CI-verified, the user-driven manual smokes have not been run, and the license is
-undefined. See "Blocking items" at the bottom for exactly what flips this to GO.
+and pushed to `main` (M4: `a096fb8` + `128423f`), and the local gate is green, but
+CI has not yet been confirmed green on all three OSes, the user-driven manual
+smokes have not been run, and the license is undefined. See "Blocking items" at the
+bottom for exactly what flips this to GO.
+
+## Progress toward GO: ~70%
+
+Weighted by remaining effort to a v0 public release. The engineering is done and
+merged; what remains is verification (CI + smokes) and release logistics (license,
+signed artifacts).
+
+| Component | Weight | Progress | Contribution |
+|-----------|:------:|:--------:|:------------:|
+| v0 engineering (M1-M4 code-complete, on `main`) | 55% | ✅ 100% | 55.0 |
+| Documentation (spec, architecture, go/no-go, behavior sync) | 10% | ✅ 100% | 10.0 |
+| CI green on Linux/macOS/Windows | 10% | ⏳ ~50% (pushed 2026-07-29, running) | 5.0 |
+| Manual smokes F1-F5 (user-driven) | 15% | ⛔ 0% | 0.0 |
+| License chosen | 5% | ⛔ 0% | 0.0 |
+| Verifiable release artifacts | 5% | ⛔ 0% | 0.0 |
+| **Total** | **100%** | | **~70%** |
+
+Progress bar: `██████████████░░░░░░` 70%
 
 ## 1. Verdict summary
 
 | Area | Criterion | Status |
 |------|-----------|--------|
 | Build order | M1 passthrough, M2 audit, M3 deny+scan+seal, M4 approval all code-complete | ✅ code-complete |
-| CI gate | build, vet, gofmt, golangci-lint, go test (-race on Linux), govulncheck, Gitleaks, CodeQL green on Linux/macOS/Windows | ⏳ M4 not yet pushed / CI-run |
+| CI gate | build, vet, gofmt, golangci-lint, go test (-race on Linux), govulncheck, Gitleaks, CodeQL green on Linux/macOS/Windows | ⏳ M4 pushed 2026-07-29, CI running / not yet confirmed green |
 | Coverage ratchet | no package coverage decreases (Art. 4.2) | ✅ held/improved locally |
 | Zero-dependency | standard library only, single static binary (Art. 1.1, 5.1) | ✅ verified |
 | Docs-code sync | DESIGN / ARCHITECTURE / SEQUENCES / README describe actual behavior (Art. 6.2) | ✅ synced for M4 |
@@ -41,8 +60,8 @@ with any competitor or a hosted tier; those are explicitly out of v0 (README,
 - **G1 - Full CI green on all three OSes.** `go build`, `go vet`, `gofmt`,
   `golangci-lint` (no suppressions), `go test` (with `-race` where the runner has
   cgo, i.e. Linux), `govulncheck`, Gitleaks, CodeQL. No `[skip ci]`, no bypass
-  (Art. 4.3). *Status: local gate green on Windows (cgo off). M4 is not yet
-  committed/pushed, so CI has not run it. NOT satisfied until pushed and green.*
+  (Art. 4.3). *Status: local gate green on Windows (cgo off); M4 pushed to `main`
+  2026-07-29, CI running. NOT satisfied until CI is confirmed green on all three OSes.*
 - **G2 - Coverage ratchet.** No package decreases vs. its prior baseline
   (Art. 4.2). *Status locally:* config 100%, policy 100%, approval 96.7% (new),
   audit 83.1% (=), cli 94.8% (up from 93.6), proxy 84.5% (up from 82.4), scan 86.8%
@@ -117,8 +136,8 @@ only if real users ask (README, `USE_CASES.md`).
 
 ## 8. Blocking items (what flips NO-GO to GO)
 
-1. **Commit and push M4; CI green on Linux/macOS/Windows** (G1). Currently local
-   only. This is the single largest open item.
+1. **CI green on Linux/macOS/Windows** (G1). M4 is committed and pushed
+   (2026-07-29); this item is satisfied once CI is confirmed green.
 2. **Run the manual smokes F1-F5** against a real MCP server and record the result.
 3. **Choose a license** and replace the README placeholder (⛔ hard blocker for
    going public).
@@ -132,4 +151,4 @@ to **GO** with a dated sign-off here.
 
 | Date | Verdict | Note |
 |------|---------|------|
-| 2026-07-29 | NO-GO | v0 code-complete; M4 not yet committed/CI-verified, manual smokes pending, license undefined. |
+| 2026-07-29 | NO-GO (~70%) | v0 code-complete and pushed to `main` (M4 `a096fb8`+`128423f`); CI not yet confirmed green, manual smokes pending, license undefined. |

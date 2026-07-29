@@ -62,6 +62,12 @@ the last v0 milestone. Only the user-driven manual smokes remain.** See
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3, §5, §6, and §8 for the per-milestone task
 lists.
 
+**Progress: 4/4 v0 milestones code-complete; overall v0 release readiness ~70%.**
+The remaining ~30% is verification (CI confirmation on all three OSes, the
+user-driven manual smokes) and release logistics (a license, verifiable release
+artifacts). The full release gate, with the weighted breakdown behind that
+number, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
+
 1. ✅ **Transparent passthrough.** The proxy only forwards. Proves we can sit in
    the middle without breaking MCP. *Milestone: the agent works exactly as
    before, but through Ganimedes.*
