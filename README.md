@@ -22,8 +22,8 @@ about every action an agent takes:
 - Can we **PROVE** what it did? (verifiable audit)
 
 In v0 that is one small gateway wrapping a single MCP server: allowed calls are
-forwarded, denied ones are blocked with an error, and every call is written to a
-tamper-evident log.
+forwarded, denied ones are blocked with an error, flagged ones pause for human
+approval on a local page, and every call is written to a tamper-evident log.
 
 ```mermaid
 flowchart LR
@@ -31,18 +31,20 @@ flowchart LR
     S["MCP Server<br/>(real tools)"]
 
     subgraph GAN["Ganimedes gateway (single Go binary)"]
-        POL{"Deny-list<br/>policy"}
+        POL{"Policy<br/>(deny / approve)"}
+        HITL["Human approval<br/>(localhost page)"]
         AUD[("Hash-chained<br/>audit log")]
     end
 
     A -->|"tools/call"| POL
     POL -->|"allowed"| S
+    POL -->|"flagged"| HITL
+    HITL -->|"approved"| S
     S -->|"result"| A
     POL -.->|"denied (JSON-RPC error)"| A
+    HITL -.->|"rejected / timeout"| A
     POL -->|"logged"| AUD
-
-    HITL["Human approval<br/>(planned)"]:::soon -.-> POL
-    classDef soon stroke-dasharray:5,opacity:0.55
+    HITL -->|"logged"| AUD
 ```
 
 ## Governance for agents, not a sandbox
@@ -107,7 +109,7 @@ same four pillars, each earned by real adoption before it is built:
 | Config format  | JSON                                                  | in use  |
 | Audit log      | JSONL file, SHA-256 hash chain                        | in use  |
 | Audit signing  | RFC 8785 canonical JSON + Ed25519 signatures          | in use  |
-| Approval UI    | minimal HTML page served on localhost via `net/http`  | planned |
+| Approval UI    | minimal HTML page served on localhost via `net/http`  | in use  |
 
 No frontend framework: the only UI is a small local approval page served
 directly by the Go binary. Everything else is a CLI/proxy with no screen.

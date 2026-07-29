@@ -323,3 +323,108 @@ the user-driven manual smoke (item 5) remains before this milestone is fully don
    `GANIMEDES_SIGNING_KEY`; `verify` takes `--pubkey` for offline checks. Tests
    cover the RFC vectors, a forged-and-re-signed entry, the wrong key, and the
    key round-trip (audit coverage ~82%, cli ~94%).
+
+## 8. Milestone 4 design: human-in-the-loop
+
+**Goal:** a `tools/call` to a tool the operator flagged for review is paused; a
+human approves or rejects it on a local page before it reaches the real server,
+and the decision (or a timeout) is recorded. This is build-order step 4 in
+[`DESIGN.md`](DESIGN.md#5-build-order); the wire behavior is diagram 4 in
+[`SEQUENCES.md`](SEQUENCES.md#4-human-in-the-loop).
+
+### One new leaf package, wired by the proxy
+
+Following the §1 layering, the approval mechanism is a pure package the proxy
+calls into; it knows about HTTP and about waiting for a human, but nothing about
+JSON-RPC framing or the audit format.
+
+- **`internal/approval`** hosts the localhost page and blocks a caller until a
+  decision arrives. `New(addr, timeout)` validates that `addr` is loopback
+  (Art. 2.2) and that the timeout is positive; `Start` binds the listener and
+  serves `GET /` (the pending list, rendered with `html/template` so hostile tool
+  names/args cannot inject script) and `POST /decision` (approve/reject).
+  `Request(tool, args)` registers a pending call, blocks on a per-call buffered
+  channel, and returns `Approved`, `Rejected`, or `TimedOut` (the fail-closed zero
+  value). Stdlib only: `net/http`, `html/template`, `sync`, `time`.
+- **`internal/policy`** grew a third verdict, `RequireApproval`, and an
+  `approve` set alongside `deny`. `Decide` checks deny first, so a tool on both
+  lists is denied (the stricter verdict). Everything else is unchanged and still
+  default-allow.
+- **`internal/config`** grew an `Approve []string` field (the same shape and
+  `DisallowUnknownFields` safety as `Deny`).
+
+### Enforcement in the proxy
+
+The pause happens on the **request** direction, before forwarding, reusing the
+milestone-3 machinery:
+
+- `handleRequest` now switches on the policy verdict. `RequireApproval` calls
+  `handleApproval`, which consults the `Approver` (an interface the proxy defines
+  and `approval.Server` satisfies, so tests inject a fake and never open a
+  socket). On `Approved` the call is remembered with `decision=approved` and
+  forwarded, so its response completes the audit entry on the other direction,
+  exactly like an allowed call but with the approved verdict. On `Rejected` or
+  `TimedOut` the call is blocked like a deny: a JSON-RPC error (`code -32000`) is
+  written back through the same `syncWriter`, and the attempt is audited from the
+  request side with `decision=rejected` / `decision=timeout`.
+- **Deny, reject, and timeout share one block path.** `blockCall` writes the
+  policy error and appends the request-side audit entry; `writePolicyError` /
+  `policyErrorObject` (generalized from milestone 3's deny-specific helpers)
+  produce the message. Each block reason has its own wording so the agent can tell
+  a deny from a rejection from a timeout.
+- **Fail-closed on a missing approver.** If a call requires approval but no
+  approver is wired (unreachable from the CLI, which only omits the approver when
+  the approval-list is empty), the call is denied, never allowed (Art. 2.1).
+
+### Concurrency: serial approvals (a deliberate v0 limitation)
+
+The request-direction pump blocks inside `handleApproval` while the human decides,
+so v0 handles approvals **serially**: at most one call is pending at a time and
+the page shows one item. This is head-of-line blocking, acceptable for the v0
+target (a single local client wrapping one server) and simpler than a queued
+model ("simplicity over cleverness", Art. 1.2). The `audit.Logger` mutex still
+serializes the chain across both directions (unchanged from §4's milestone-3
+update); the approval wait adds no new shared state the `-race` build does not
+already cover. The independent client-side timeout noted in
+[`DESIGN.md`](DESIGN.md) §7 still applies: a very slow human can trip the MCP
+client's own timer.
+
+### CLI
+
+`ganimedes run [--config <path>] [--log <path>] [--signing-key <path>]
+[--approval-addr <host:port>] [--approval-timeout <dur>] -- <server-cmd> [args]`.
+The approval page is started only when the config's `approve` list is non-empty;
+otherwise `run` is exactly milestone-3 behavior (no page, a nil approver). The
+page URL is logged to **stderr** (stdout is the protocol channel, Art. 3.1).
+
+## 9. Milestone 4 task list
+
+Status: **human-in-the-loop is code-complete** (2026-07-29). Only the user-driven
+manual smoke (item 6) remains before this milestone is fully done (see
+[`DESIGN.md`](DESIGN.md) §5, §7).
+
+1. ✅ **`internal/config`**: `Approve []string` field, same JSON safety as `Deny`.
+   Round-trip test extended to cover it (coverage 100%).
+2. ✅ **`internal/policy`**: `RequireApproval` verdict, `approve` set, deny-wins
+   precedence, nil-safe. Table-driven tests cover all three verdicts and the
+   precedence (coverage 100%).
+3. ✅ **`internal/approval`**: `Server` (`New` with loopback + timeout validation,
+   `Start`/`URL`/`Close`), `Request` (blocks, fail-closed on timeout), the
+   `GET /` and `POST /decision` handlers, and the auto-escaping page template.
+   Tests cover the approve/reject/timeout outcomes, the loopback guard, the
+   handler error paths, and the real listener via `httptest` and one live
+   `Start`/`Close` (coverage ~97%).
+4. ✅ **`internal/proxy`**: request-side `RequireApproval` handling via the
+   `Approver` interface, `decision=approved` carried through pending correlation,
+   `rejected`/`timeout` blocks reusing the deny path, fail-closed on a nil
+   approver. Tests inject a fake approver for the approved/rejected/timeout paths
+   and the nil-approver case (coverage ~85%, up from ~82%).
+5. ✅ **`internal/cli`**: `--approval-addr` / `--approval-timeout` flags, and the
+   wiring that stands up the page only when the approval-list is non-empty. Tests
+   cover flag parsing, the non-loopback and address-in-use failures, and the
+   happy-path wiring (coverage ~95%).
+6. ⏳ **Manual smoke** (user-driven): wrap a real MCP server with a `--config`
+   approval-list, trigger a flagged tools/call, open the page, and confirm
+   Approve forwards the call while Reject and a timeout return the error to the
+   agent; `verify` shows the `approved`/`rejected`/`timeout` entries. Runs in the
+   user's environment.

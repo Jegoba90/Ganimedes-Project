@@ -27,21 +27,38 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/Jegoba90/Ganimedes-Project/internal/approval"
 	"github.com/Jegoba90/Ganimedes-Project/internal/audit"
 	"github.com/Jegoba90/Ganimedes-Project/internal/config"
 	"github.com/Jegoba90/Ganimedes-Project/internal/policy"
 )
+
+// Approver decides a tools/call that policy flagged for human review. Request
+// blocks until a human approves or rejects it, or the wait times out, and returns
+// the outcome. The proxy depends only on this interface, so tests can inject a
+// fake without spinning up the real localhost page; internal/approval.Server is
+// the production implementation. A timeout (approval.TimedOut) fails closed to a
+// denial (Constitution Art. 2.1).
+type Approver interface {
+	Request(tool string, args json.RawMessage) approval.Outcome
+}
 
 // Run wraps the MCP server described by cfg and proxies a single client session
 // to it. Client bytes are read from in and forwarded to the server's stdin; the
 // server's stdout is forwarded back to out. The real server's stderr is passed
 // through to Ganimedes' own stderr so its logs stay visible.
 //
-// cfg.Deny drives the policy engine: a tools/call to a denied tool is blocked
-// before it reaches the server. If log is non-nil, every allowed tools/call (and
-// every blocked one) is recorded; if log is nil, no audit is written. With an
-// empty deny-list and a nil log, Run is a transparent passthrough (milestone 1
-// behavior). Either way the forwarded wire bytes are verbatim.
+// cfg.Deny and cfg.Approve drive the policy engine: a tools/call to a denied tool
+// is blocked before it reaches the server, and a tools/call to a tool on the
+// approval-list is paused for a human via appr (milestone 4). If log is non-nil,
+// every allowed, approved, and blocked tools/call is recorded; if log is nil, no
+// audit is written. With empty lists and a nil log, Run is a transparent
+// passthrough (milestone 1 behavior). Either way the forwarded wire bytes are
+// verbatim.
+//
+// appr is consulted only for tools on the approval-list; it may be nil when the
+// approval-list is empty. If a tool requires approval but appr is nil, the call
+// fails closed to a denial (Constitution Art. 2.1).
 //
 // in and out are plain io.Reader/io.Writer (not hardcoded to os.Stdin/Stdout)
 // so the proxy can be driven by in-memory streams in tests.
@@ -49,7 +66,7 @@ import (
 // Run blocks until the server closes its output (typically because it exited),
 // then reaps the process. It returns the first error encountered, or nil on a
 // clean shutdown.
-func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger) error {
+func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger, appr Approver) error {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Stderr = os.Stderr // out-of-band: surface the real server's logs
 
@@ -66,10 +83,10 @@ func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger) erro
 		return fmt.Errorf("starting server %q: %w", cfg.Command, err)
 	}
 
-	// The policy engine enforces the deny-list. With no rules it allows
-	// everything (milestone-1/2 passthrough), and it runs whether or not
-	// auditing is on: enforcement does not depend on the log.
-	eng := policy.New(cfg.Deny)
+	// The policy engine enforces the deny-list and the approval-list. With no
+	// rules it allows everything (milestone-1/2 passthrough), and it runs whether
+	// or not auditing is on: enforcement does not depend on the log.
+	eng := policy.New(cfg.Deny, cfg.Approve)
 
 	// The client-facing stream is written by two goroutines: the server->client
 	// pump, and the deny path (which injects an error response for a blocked
@@ -86,15 +103,16 @@ func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger) erro
 	}
 
 	// Direction 1 (client -> server): inspect BEFORE forwarding. A denied call
-	// must be blocked before the server can see it; an allowed call is recorded
-	// as pending before the server can answer, so the response side never races
-	// ahead of the request side. The handler returns false to block forwarding.
-	// It is installed only when there is something to inspect for (deny rules or
+	// must be blocked before the server can see it; a call awaiting approval is
+	// held here until the human answers; an allowed call is recorded as pending
+	// before the server can answer, so the response side never races ahead of the
+	// request side. The handler returns false to block forwarding. It is installed
+	// only when there is something to inspect for (deny/approval rules or
 	// auditing); otherwise this stays a raw byte passthrough (milestone 1).
 	var handleReq func([]byte) bool
-	if len(cfg.Deny) > 0 || log != nil {
+	if len(cfg.Deny) > 0 || len(cfg.Approve) > 0 || log != nil {
 		handleReq = func(line []byte) bool {
-			return handleRequest(line, eng, p, log, clientOut)
+			return handleRequest(line, eng, p, appr, log, clientOut)
 		}
 	}
 
@@ -186,17 +204,21 @@ func pump(src io.Reader, dst io.Writer, handle func([]byte) bool, inspectFirst b
 // handleRequest inspects one client->server message and returns whether pump
 // should forward it to the real server.
 //
-// A tools/call to a tool on the deny-list is blocked: it is NOT forwarded, a
-// JSON-RPC error response is written back to the client, and (when auditing) the
-// blocked attempt is recorded with decision=deny. Every other message — an
-// allowed tools/call, another method, or anything that is not JSON we understand
-// — is forwarded verbatim. An allowed tools/call is also remembered (when
-// auditing) so its response can complete the audit entry on the other direction.
+// It acts on the policy verdict for a tools/call:
+//   - Deny: not forwarded; a JSON-RPC error goes back to the client and (when
+//     auditing) the attempt is recorded with decision=deny.
+//   - RequireApproval: the call is paused for a human (see handleApproval);
+//     approval forwards it, rejection or timeout blocks it like a deny.
+//   - Allow: forwarded verbatim, and remembered (when auditing) so its response
+//     can complete the audit entry on the other direction.
 //
-// A write or audit failure on the deny path is reported to stderr and swallowed:
+// Every other message — another method, or anything that is not JSON we
+// understand — is forwarded verbatim and not audited.
+//
+// A write or audit failure on a block path is reported to stderr and swallowed:
 // the call is still blocked (fail-closed, Constitution Art. 2.1) and the proxy
 // stays up rather than taking the agent down over a logging problem.
-func handleRequest(line []byte, eng *policy.Engine, p *pending, log *audit.Logger, client io.Writer) (forward bool) {
+func handleRequest(line []byte, eng *policy.Engine, p *pending, appr Approver, log *audit.Logger, client io.Writer) (forward bool) {
 	var msg struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
@@ -215,35 +237,89 @@ func handleRequest(line []byte, eng *policy.Engine, p *pending, log *audit.Logge
 		return true
 	}
 
-	if eng.Decide(msg.Params.Name) == policy.Deny {
-		if err := writeDenyResponse(client, msg.ID, msg.Params.Name); err != nil {
-			fmt.Fprintf(os.Stderr, "ganimedes: writing deny response failed: %v\n", err)
+	tool, args := msg.Params.Name, msg.Params.Arguments
+	switch eng.Decide(tool) {
+	case policy.Deny:
+		return blockCall(client, log, msg.ID, args, tool, audit.DecisionDeny, denyMessage(tool))
+	case policy.RequireApproval:
+		return handleApproval(client, p, appr, log, msg.ID, tool, args)
+	default: // policy.Allow
+		// Remember it so recordResponse can complete the entry when the server
+		// answers. Only needed when auditing.
+		if p != nil {
+			p.remember(msg.ID, tool, args, audit.DecisionAllow)
 		}
-		if log != nil {
-			if _, err := log.Append(msg.Params.Name, msg.Params.Arguments, nil, denyErrorObject(msg.Params.Name), audit.DecisionDeny); err != nil {
-				fmt.Fprintf(os.Stderr, "ganimedes: audit append failed: %v\n", err)
-			}
-		}
-		return false // blocked: the real server never sees this call
+		return true
 	}
-
-	// Allowed: remember it so recordResponse can complete the entry when the
-	// server answers. Only needed when auditing.
-	if p != nil {
-		p.remember(msg.ID, msg.Params.Name, msg.Params.Arguments)
-	}
-	return true
 }
 
-// denyCode is the JSON-RPC error code returned for a policy denial. JSON-RPC 2.0
-// reserves -32000..-32099 for implementation-defined server errors, which a
-// policy block is.
-const denyCode = -32000
+// handleApproval pauses a tools/call for a human decision and acts on the result.
+// Approved: the call is remembered with decision=approved (so its response
+// completes the audit entry on the other direction) and forwarded. Rejected or
+// timed out: the client gets a JSON-RPC error, the attempt is audited from the
+// request side, and the call is not forwarded. A nil approver cannot reach a
+// definitive approval, so it fails closed to a denial (Art. 2.1).
+func handleApproval(client io.Writer, p *pending, appr Approver, log *audit.Logger, id json.RawMessage, tool string, args json.RawMessage) (forward bool) {
+	if appr == nil {
+		return blockCall(client, log, id, args, tool, audit.DecisionDeny, noApproverMessage(tool))
+	}
+	switch appr.Request(tool, args) {
+	case approval.Approved:
+		if p != nil {
+			p.remember(id, tool, args, audit.DecisionApproved)
+		}
+		return true
+	case approval.Rejected:
+		return blockCall(client, log, id, args, tool, audit.DecisionRejected, rejectMessage(tool))
+	default: // approval.TimedOut, and any unknown value: fail closed
+		return blockCall(client, log, id, args, tool, audit.DecisionTimeout, timeoutMessage(tool))
+	}
+}
 
-// denyMessage is the reason shown to the agent for a blocked call. It names
-// Ganimedes and the tool so the cause is unambiguous.
+// blockCall handles a tools/call that will not be forwarded: it sends a JSON-RPC
+// error to the client, records the attempt from the request side with the given
+// decision (there is no server response to wait for), and returns false so pump
+// does not forward it. Deny, human rejection, and approval timeout all funnel
+// through here. Write and audit failures are reported to stderr and swallowed:
+// the call stays blocked (fail-closed, Art. 2.1) and the proxy stays up.
+func blockCall(client io.Writer, log *audit.Logger, id, args json.RawMessage, tool, decision, message string) (forward bool) {
+	if err := writePolicyError(client, id, message); err != nil {
+		fmt.Fprintf(os.Stderr, "ganimedes: writing policy error failed: %v\n", err)
+	}
+	if log != nil {
+		if _, err := log.Append(tool, args, nil, policyErrorObject(message), decision); err != nil {
+			fmt.Fprintf(os.Stderr, "ganimedes: audit append failed: %v\n", err)
+		}
+	}
+	return false // blocked: the real server never sees this call
+}
+
+// policyCode is the JSON-RPC error code returned for any policy block (deny,
+// human rejection, or approval timeout). JSON-RPC 2.0 reserves -32000..-32099 for
+// implementation-defined server errors, which a policy block is.
+const policyCode = -32000
+
+// denyMessage, rejectMessage, and timeoutMessage are the reasons shown to the
+// agent for a blocked call. Each names Ganimedes and the tool so the cause is
+// unambiguous, and distinguishes why the call did not go through.
 func denyMessage(tool string) string {
 	return fmt.Sprintf("blocked by Ganimedes policy: tool %q is on the deny-list", tool)
+}
+
+func rejectMessage(tool string) string {
+	return fmt.Sprintf("blocked by Ganimedes: a human rejected the call to tool %q", tool)
+}
+
+func timeoutMessage(tool string) string {
+	return fmt.Sprintf("blocked by Ganimedes: approval for tool %q timed out", tool)
+}
+
+// noApproverMessage is the fail-closed reason when a tool requires approval but
+// no approver is configured. In production this path is unreachable (the CLI only
+// omits the approver when the approval-list is empty), so it is a defensive
+// guarantee (Art. 2.1) rather than a routine outcome.
+func noApproverMessage(tool string) string {
+	return fmt.Sprintf("blocked by Ganimedes: tool %q requires approval but no approver is configured", tool)
 }
 
 // rpcErrorBody is the "error" member of a JSON-RPC error response.
@@ -252,10 +328,10 @@ type rpcErrorBody struct {
 	Message string `json:"message"`
 }
 
-// denyErrorObject returns the JSON-RPC error member recorded in the audit log
-// for a denied call, so the log shows exactly what the client was told.
-func denyErrorObject(tool string) json.RawMessage {
-	b, err := json.Marshal(rpcErrorBody{Code: denyCode, Message: denyMessage(tool)})
+// policyErrorObject returns the JSON-RPC error member recorded in the audit log
+// for a blocked call, so the log shows exactly what the client was told.
+func policyErrorObject(message string) json.RawMessage {
+	b, err := json.Marshal(rpcErrorBody{Code: policyCode, Message: message})
 	if err != nil {
 		// rpcErrorBody holds only a string and an int, so Marshal cannot fail;
 		// this keeps the audit record valid JSON even in the impossible case.
@@ -264,11 +340,11 @@ func denyErrorObject(tool string) json.RawMessage {
 	return b
 }
 
-// writeDenyResponse writes a complete JSON-RPC error response for a blocked call
+// writePolicyError writes a complete JSON-RPC error response for a blocked call
 // to the client. Marshaling (rather than string formatting) guarantees valid
-// JSON and correct escaping of the tool name in the message. The id is echoed
-// verbatim so the client can correlate the error with its request.
-func writeDenyResponse(client io.Writer, id json.RawMessage, tool string) error {
+// JSON and correct escaping of the message. The id is echoed verbatim so the
+// client can correlate the error with its request.
+func writePolicyError(client io.Writer, id json.RawMessage, message string) error {
 	resp := struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
@@ -276,15 +352,15 @@ func writeDenyResponse(client io.Writer, id json.RawMessage, tool string) error 
 	}{
 		JSONRPC: "2.0",
 		ID:      id,
-		Error:   rpcErrorBody{Code: denyCode, Message: denyMessage(tool)},
+		Error:   rpcErrorBody{Code: policyCode, Message: message},
 	}
 	b, err := json.Marshal(resp)
 	if err != nil {
-		return fmt.Errorf("encoding deny response: %w", err)
+		return fmt.Errorf("encoding policy error response: %w", err)
 	}
 	b = append(b, '\n')
 	if _, err := client.Write(b); err != nil {
-		return fmt.Errorf("writing deny response: %w", err)
+		return fmt.Errorf("writing policy error response: %w", err)
 	}
 	return nil
 }
@@ -307,9 +383,12 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 
 // pendingCall is a tools/call seen on the request side, waiting for its
 // response to arrive on the other direction so the pair can be logged together.
+// decision records how the call was cleared to reach the server (allow by
+// default, or approved by a human) so recordResponse logs the right verdict.
 type pendingCall struct {
-	tool string
-	args json.RawMessage
+	tool     string
+	args     json.RawMessage
+	decision string
 }
 
 // pending correlates tools/call requests with their responses by JSON-RPC id.
@@ -324,11 +403,12 @@ func newPending() *pending {
 	return &pending{calls: make(map[string]pendingCall)}
 }
 
-// remember stores an allowed tools/call keyed by its id so the matching response
-// can complete it on the other direction.
-func (p *pending) remember(id json.RawMessage, tool string, args json.RawMessage) {
+// remember stores a cleared tools/call keyed by its id so the matching response
+// can complete it on the other direction. decision is the verdict that cleared it
+// (allow or approved), carried through to the audit entry.
+func (p *pending) remember(id json.RawMessage, tool string, args json.RawMessage, decision string) {
 	p.mu.Lock()
-	p.calls[idKey(id)] = pendingCall{tool: tool, args: args}
+	p.calls[idKey(id)] = pendingCall{tool: tool, args: args, decision: decision}
 	p.mu.Unlock()
 }
 
@@ -364,9 +444,10 @@ func (p *pending) recordResponse(line []byte, log *audit.Logger) {
 		return // a response to something that was not a tracked tools/call
 	}
 
-	// A response reaching here was for an allowed call (denied calls are never
-	// forwarded, so the server never answers them).
-	if _, err := log.Append(call.tool, call.args, msg.Result, msg.Error, audit.DecisionAllow); err != nil {
+	// A response reaching here was for a call the proxy forwarded: either allowed
+	// by default or approved by a human (blocked calls are never forwarded, so the
+	// server never answers them). call.decision carries which one it was.
+	if _, err := log.Append(call.tool, call.args, msg.Result, msg.Error, call.decision); err != nil {
 		fmt.Fprintf(os.Stderr, "ganimedes: audit append failed: %v\n", err)
 	}
 }

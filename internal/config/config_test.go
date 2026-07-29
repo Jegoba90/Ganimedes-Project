@@ -17,13 +17,14 @@ func write(t *testing.T, content string) string {
 	return path
 }
 
-// TestLoad_Full parses a complete config (command, args, deny) and checks every
-// field round-trips.
+// TestLoad_Full parses a complete config (command, args, deny, approve) and
+// checks every field round-trips.
 func TestLoad_Full(t *testing.T) {
 	path := write(t, `{
 		"command": "npx",
 		"args": ["-y", "server-filesystem", "/data"],
-		"deny": ["fs.delete", "db.dropTable"]
+		"deny": ["fs.delete", "db.dropTable"],
+		"approve": ["email.send", "payment.execute"]
 	}`)
 
 	c, err := Load(path)
@@ -38,6 +39,9 @@ func TestLoad_Full(t *testing.T) {
 	}
 	if len(c.Deny) != 2 || c.Deny[0] != "fs.delete" || c.Deny[1] != "db.dropTable" {
 		t.Errorf("Deny = %v, want [fs.delete db.dropTable]", c.Deny)
+	}
+	if len(c.Approve) != 2 || c.Approve[0] != "email.send" || c.Approve[1] != "payment.execute" {
+		t.Errorf("Approve = %v, want [email.send payment.execute]", c.Approve)
 	}
 }
 

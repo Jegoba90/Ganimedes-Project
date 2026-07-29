@@ -2,11 +2,15 @@ package policy
 
 import "testing"
 
-// TestDecide covers the deny-list decision table: listed tools are denied,
-// everything else is allowed (default-allow), matching is exact and
-// case-sensitive.
+// TestDecide covers the decision table across both lists: denied tools are
+// denied, approval-listed tools require approval, a tool on both lists is denied
+// (deny wins, the stricter verdict), everything else is allowed (default-allow).
+// Matching is exact and case-sensitive on both lists.
 func TestDecide(t *testing.T) {
-	eng := New([]string{"fs.delete", "db.dropTable", ""}) // empty entry ignored
+	eng := New(
+		[]string{"fs.delete", "db.dropTable", "", "both.tool"}, // empty entry ignored
+		[]string{"email.send", "payment.execute", "", "both.tool"},
+	)
 
 	cases := []struct {
 		tool string
@@ -14,9 +18,13 @@ func TestDecide(t *testing.T) {
 	}{
 		{"fs.delete", Deny},
 		{"db.dropTable", Deny},
-		{"fs.read", Allow},         // not listed
-		{"", Allow},                // empty tool name is not on the list
-		{"FS.DELETE", Allow},       // exact match is case-sensitive
+		{"email.send", RequireApproval},
+		{"payment.execute", RequireApproval},
+		{"both.tool", Deny},        // on both lists: deny wins (stricter)
+		{"fs.read", Allow},         // on neither list
+		{"", Allow},                // empty tool name is on neither list
+		{"FS.DELETE", Allow},       // deny match is case-sensitive
+		{"EMAIL.SEND", Allow},      // approval match is case-sensitive too
 		{"fs.delete ", Allow},      // trailing space is a different name
 		{"db.dropTableXYZ", Allow}, // not a prefix/substring match
 	}
@@ -27,10 +35,10 @@ func TestDecide(t *testing.T) {
 	}
 }
 
-// TestDecide_EmptyList: an engine with no rules allows everything (this is the
-// milestone-1/2 passthrough case).
-func TestDecide_EmptyList(t *testing.T) {
-	for _, eng := range []*Engine{New(nil), New([]string{})} {
+// TestDecide_EmptyLists: an engine with no rules allows everything (this is the
+// milestone-1/2 passthrough case), whether the lists are nil or empty slices.
+func TestDecide_EmptyLists(t *testing.T) {
+	for _, eng := range []*Engine{New(nil, nil), New([]string{}, []string{})} {
 		if got := eng.Decide("anything"); got != Allow {
 			t.Errorf("empty engine Decide = %v, want Allow", got)
 		}

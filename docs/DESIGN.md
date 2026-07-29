@@ -54,11 +54,12 @@ instead of at the server directly. That is the adoption win.
 
 ## 5. Build order
 
-Each step is a checkpoint that works on its own. **Status (2026-07-28): steps 1
-and 2 are shipped and on `main`; step 3 (deny-list core) is implemented, and both
-its companions are now built too, the `scan` command and the audit RFC 8785 +
-Ed25519 upgrade; step 4 (human-in-the-loop) is the only one still pending.** See
-[`ARCHITECTURE.md`](ARCHITECTURE.md) §3, §5, and §6 for the per-milestone task
+Each step is a checkpoint that works on its own. **Status (2026-07-29): all four
+steps are code-complete. Steps 1 and 2 are shipped and on `main`; step 3
+(deny-list) plus its two companions (the `scan` command and the audit RFC 8785 +
+Ed25519 upgrade) are done; and step 4 (human-in-the-loop) is now implemented too,
+the last v0 milestone. Only the user-driven manual smokes remain.** See
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §3, §5, §6, and §8 for the per-milestone task
 lists.
 
 1. ✅ **Transparent passthrough.** The proxy only forwards. Proves we can sit in
@@ -79,8 +80,15 @@ lists.
    `TECH_DEBT.md` TD-2 for a
    real-world incident informing an optional rate/volume extension to this
    milestone (not implemented; see §6).
-4. ⬜ **Human-in-the-loop.** Approval for flagged tools. *Milestone: the
-   30-second demo.*
+4. ✅ **Human-in-the-loop.** Approval for flagged tools, done 2026-07-29. A
+   tools/call whose name is on the config's `approve` list is paused; the call is
+   shown on a local approval page (`--approval-addr`, loopback only) and the human
+   clicks Approve or Reject. Approve forwards the call and audits it with
+   `decision=approved`; Reject and a `--approval-timeout` expiry both block it
+   (the client gets a JSON-RPC error `code -32000`) and audit it with
+   `decision=rejected` / `decision=timeout`. The timeout fails closed (Art. 2.1,
+   3.4). *Milestone: the 30-second demo.* See `ARCHITECTURE.md` §8/§9 and the
+   decision-log entry below.
 
 Rationale: prove the riskiest piece (the pipe) first; ship the most valuable and
 cheapest piece (audit) second.
@@ -91,7 +99,7 @@ cheapest piece (audit) second.
 |----------|---------|--------------|
 | Proxy implementation | Official MCP SDK vs raw JSON-RPC passthrough | **Raw passthrough.** The SDK is built to *implement* a server, not to proxy; fighting its abstraction is worse. |
 | Transport | stdio / HTTP | **stdio only in v0.** HTTP later. |
-| Approval UX | localhost page / separate TTY / webhook / desktop notification | **localhost page.** Most portable, best for the demo. |
+| Approval UX | localhost page / separate TTY / webhook / desktop notification | **localhost page** (implemented, M4 2026-07-29). Most portable, best for the demo. |
 | Audit storage | JSONL file / database | **JSONL file in v0.** DB later. |
 | Servers wrapped | one / many | **One in v0.** Multi-server complicates id correlation without helping the demo. |
 | Rate/volume limiting in the policy engine | Add now vs. evaluate when M3 design opens | **Defer to M3, judge on its own merits.** Prompted by a real incident (`TECH_DEBT.md` TD-2: an autonomous agent's escape was caught by anomalous *call volume*, not a single flagged action — a gap in a stateless per-call policy). The cheap, incident-informed items (a cited case study in USE_CASES.md, an explicit boundary-of-responsibility note) are worth doing regardless of this decision. The rate-limiting feature itself should not be adopted reflexively because a scary incident happened elsewhere — it earns its place in M3 only if it fits the deterministic, no-ML deny-list model and justifies its added complexity for a v0 aimed at a solo developer wrapping one local MCP server, not a frontier lab's threat model. |
@@ -246,3 +254,47 @@ cheapest piece (audit) second.
   two independent timers. v0 does not solve the client-side timeout; it
   documents that very long human delays can hit it, and keeps the approval
   timeout configurable so it can be tuned below the client's.
+
+### Human-in-the-loop implementation (milestone 4, done 2026-07-29)
+
+- **What shipped:** a new leaf package `internal/approval` (an HTTP-plus-wait
+  helper that knows nothing about JSON-RPC), a third policy verdict
+  `RequireApproval`, a config `approve` list, and proxy wiring that pauses a
+  flagged `tools/call`, consults the approver, and forwards or blocks on the
+  result. `audit`'s `approved`/`rejected`/`timeout` decisions (reserved earlier)
+  are now emitted.
+- **Layering:** `approval` is a leaf like `policy`/`audit`. The `proxy` owns the
+  only JSON-RPC knowledge and defines the `Approver` interface it depends on, so
+  tests inject a fake approver and never bind a socket; `approval.Server` is the
+  production implementation. No import cycle: `proxy → approval`, `approval →`
+  stdlib only.
+- **Resolved sub-decisions (at implementation):**
+  - **Transport / page:** a `localhost` HTTP page rendered with `html/template`
+    (auto-escapes hostile tool names/args), refreshed with a 2-second `meta`
+    refresh so a paused call appears and a resolved one drops off with no
+    JavaScript. Stdlib only (`net/http`, `html/template`), Art. 1.1.
+    Buttons POST to `/decision`; `GET /` lists pending calls.
+  - **Address:** `--approval-addr`, default `127.0.0.1:8765`, **validated to be a
+    loopback host** (`New` rejects `0.0.0.0`, a bare `:port`, or any routable
+    address). The page never leaves the machine (Art. 2.2). No authentication in
+    v0: anyone with local access to the port can approve/reject; documented as an
+    honest limitation (Art. 2.4), acceptable for a local developer tool.
+  - **Timeout:** `--approval-timeout`, default `60s`, fail-closed to a denial on
+    expiry (Art. 2.1, 3.4).
+  - **Concurrency model:** approvals are handled **serially**. The proxy's
+    request-direction pump blocks on the human decision, so at most one call is
+    pending at a time and the page shows one item. This is head-of-line blocking
+    for the (rare, single-client, local) v0 case and keeps the design simple
+    ("simplicity over cleverness", Art. 1.2); combined with the known client-side
+    timeout above, a very slow human can trip the client's own timer. A
+    concurrent/queued model is a later option if it earns its complexity.
+  - **Nil-approver safety:** if a tool somehow requires approval with no approver
+    wired (unreachable from the CLI, which only omits the approver when the
+    approval-list is empty), the call fails closed to a denial rather than passing
+    through (Art. 2.1).
+- **Status:** ✅ implemented 2026-07-29 (`internal/approval/approval.go`, the
+  `RequireApproval` verdict in `internal/policy`, the `approve` field in
+  `internal/config`, the approval wiring in `internal/proxy`, and the
+  `--approval-addr`/`--approval-timeout` flags in `internal/cli`). Full gate green
+  including `golangci-lint` and `govulncheck`; the manual smoke (§8 task list)
+  runs in the user's environment.

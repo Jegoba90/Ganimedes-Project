@@ -10,10 +10,13 @@
 package cli
 
 import (
+	"context"
 	"crypto/ed25519"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/Jegoba90/Ganimedes-Project/internal/approval"
 	"github.com/Jegoba90/Ganimedes-Project/internal/audit"
 	"github.com/Jegoba90/Ganimedes-Project/internal/config"
 	"github.com/Jegoba90/Ganimedes-Project/internal/proxy"
@@ -37,6 +40,15 @@ const defaultLogPath = "ganimedes-audit.jsonl"
 const (
 	defaultSigningKeyPath = "ganimedes-signing.key"
 	signingKeyEnv         = "GANIMEDES_SIGNING_KEY"
+)
+
+// Approval-page defaults (milestone 4). The address must be loopback (validated
+// by internal/approval, Constitution Art. 2.2); the timeout fails closed to a
+// denial when a human does not answer (Art. 2.1, 3.4). Both are configurable via
+// --approval-addr and --approval-timeout.
+const (
+	defaultApprovalAddr    = "127.0.0.1:8765"
+	defaultApprovalTimeout = 60 * time.Second
 )
 
 // Run is the real entrypoint. It receives the arguments (already stripped of
@@ -81,26 +93,31 @@ func Run(args []string) int {
 }
 
 // usageRun is the one-line usage for the run subcommand.
-const usageRun = "run: usage: ganimedes run [--config <path>] [--log <path>] [--signing-key <path>] -- <server-command> [args...]"
+const usageRun = "run: usage: ganimedes run [--config <path>] [--log <path>] [--signing-key <path>] [--approval-addr <host:port>] [--approval-timeout <dur>] -- <server-command> [args...]"
 
 // runCommand implements
 //
-//	ganimedes run [--config <path>] [--log <path>] [--signing-key <path>] -- <server-command> [args...]
+//	ganimedes run [--config <path>] [--log <path>] [--signing-key <path>] [--approval-addr <host:port>] [--approval-timeout <dur>] -- <server-command> [args...]
 //
 // It wraps an MCP server, proxying the client's stdio (os.Stdin/os.Stdout) to
-// and from it, blocking any tools/call on the deny-list, and appending every
-// tools/call to the audit log. A leading "--" separates Ganimedes' own flags
-// from the wrapped command, so the server's arguments never collide with ours.
+// and from it, blocking any tools/call on the deny-list, pausing any tools/call
+// on the approval-list for a human, and appending every tools/call to the audit
+// log. A leading "--" separates Ganimedes' own flags from the wrapped command,
+// so the server's arguments never collide with ours.
 //
 // The server command may come from --config or from the "--" tail; when both
-// give one, the explicit command line wins. The deny-list comes from --config.
-// Every audit entry is Ed25519-signed with the key at --signing-key (or the
-// GANIMEDES_SIGNING_KEY env var, or the default path); the key is generated on
-// first use if it does not exist.
+// give one, the explicit command line wins. The deny-list and approval-list come
+// from --config. When the approval-list is non-empty a local approval page is
+// served at --approval-addr (loopback only) and each held call has --approval-timeout
+// to be answered before it fails closed. Every audit entry is Ed25519-signed with
+// the key at --signing-key (or the GANIMEDES_SIGNING_KEY env var, or the default
+// path); the key is generated on first use if it does not exist.
 func runCommand(args []string) int {
 	logPath := defaultLogPath
 	configPath := ""
 	signingKeyPath := ""
+	approvalAddr := defaultApprovalAddr
+	approvalTimeout := defaultApprovalTimeout
 
 	// Hand-rolled flag parsing (no flag package) so the "--" boundary with the
 	// wrapped command stays explicit. Only flags before "--" are ours.
@@ -131,6 +148,27 @@ func runCommand(args []string) int {
 				return 2
 			}
 			signingKeyPath, args = args[1], args[2:]
+			continue
+		}
+		if args[0] == "--approval-addr" {
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "run: --approval-addr needs an address")
+				return 2
+			}
+			approvalAddr, args = args[1], args[2:]
+			continue
+		}
+		if args[0] == "--approval-timeout" {
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "run: --approval-timeout needs a duration (e.g. 60s)")
+				return 2
+			}
+			d, err := time.ParseDuration(args[1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "run: invalid --approval-timeout %q: %v\n", args[1], err)
+				return 2
+			}
+			approvalTimeout, args = d, args[2:]
 			continue
 		}
 		// First non-flag token: the wrapped command starts here.
@@ -174,7 +212,32 @@ func runCommand(args []string) int {
 	}
 	defer log.Close()
 
-	if err := proxy.Run(cfg, os.Stdin, os.Stdout, log); err != nil {
+	// Human-in-the-loop: when the config lists tools that require approval, stand
+	// up the local approval page and hand the proxy an approver. With no such
+	// tools there is nothing to approve, so the page is not started and the proxy
+	// runs exactly as in milestone 3.
+	var appr proxy.Approver
+	if len(cfg.Approve) > 0 {
+		srv, err := approval.New(approvalAddr, approvalTimeout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "run: %v\n", err)
+			return 1
+		}
+		if err := srv.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "run: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "run: approval page at %s ; %d tool(s) require approval, %s timeout (fail-closed)\n",
+			srv.URL(), len(cfg.Approve), approvalTimeout)
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = srv.Close(ctx) // best-effort graceful shutdown on exit
+		}()
+		appr = srv
+	}
+
+	if err := proxy.Run(cfg, os.Stdin, os.Stdout, log, appr); err != nil {
 		fmt.Fprintf(os.Stderr, "run: %v\n", err)
 		return 1
 	}
@@ -338,7 +401,7 @@ Usage:
   ganimedes <command> [flags]
 
 Commands:
-  run       Wrap an MCP server: ganimedes run [--config <path>] [--log <path>] [--signing-key <path>] -- <server-cmd> [args]
+  run       Wrap an MCP server: ganimedes run [--config <path>] [--log <path>] [--signing-key <path>] [--approval-addr <host:port>] [--approval-timeout <dur>] -- <server-cmd> [args]
   scan      List a server's tools and flag the risky ones: ganimedes scan [--config <path>] -- <server-cmd> [args]
   verify    Check the audit log's chain and signatures: ganimedes verify [--pubkey <path>] [log-path]
   init      Scaffold a config file (not implemented yet)

@@ -95,11 +95,13 @@ sequenceDiagram
     end
 ```
 
-## 4. Human-in-the-loop ⬜ *(planned, milestone 4)*
+## 4. Human-in-the-loop ✅ *(implemented in v0)*
 
 A flagged call pauses. A human reviews it on the local approval page. The
 result branches on approve, reject, or timeout. The approval timeout is
-configurable and fails closed (defaults to deny).
+configurable and fails closed (defaults to deny). A tool is flagged by putting
+its name on the config's `approve` list; the page is served on a loopback address
+(`--approval-addr`).
 
 ```mermaid
 sequenceDiagram

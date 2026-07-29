@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -69,6 +70,9 @@ func TestRunCommand_Usage(t *testing.T) {
 		{"--log without a path", []string{"run", "--log"}, 2},
 		{"--config without a path", []string{"run", "--config"}, 2},
 		{"--signing-key without a path", []string{"run", "--signing-key"}, 2},
+		{"--approval-addr without a value", []string{"run", "--approval-addr"}, 2},
+		{"--approval-timeout without a value", []string{"run", "--approval-timeout"}, 2},
+		{"--approval-timeout invalid duration", []string{"run", "--approval-timeout", "notaduration"}, 2},
 		{"-- with no command after it", []string{"run", "--"}, 2},
 	}
 	for _, c := range cases {
@@ -119,6 +123,81 @@ func TestRunCommand_ConfigProvidesCommand(t *testing.T) {
 	keyPath := filepath.Join(dir, "signing.key")
 	if got := Run([]string{"run", "--config", cfgPath, "--log", logPath, "--signing-key", keyPath}); got != 1 {
 		t.Errorf("Run with config command = %d, want 1", got)
+	}
+}
+
+// TestRunCommand_ApprovalWiring: a config with an approval-list stands up the
+// approval page (on an ephemeral loopback port) and hands the proxy an approver;
+// the run then fails only because the wrapped server binary does not exist (1),
+// which exercises the approval New/Start/Close wiring around a normal run.
+func TestRunCommand_ApprovalWiring(t *testing.T) {
+	quiet(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ganimedes.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"approve":["email.send"]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	args := []string{
+		"run",
+		"--config", cfgPath,
+		"--log", filepath.Join(dir, "audit.jsonl"),
+		"--signing-key", filepath.Join(dir, "signing.key"),
+		"--approval-addr", "127.0.0.1:0",
+		"--approval-timeout", "5s",
+		"--", "definitely-not-a-real-binary-xyz",
+	}
+	if got := Run(args); got != 1 {
+		t.Errorf("run with approval wiring = %d, want 1", got)
+	}
+}
+
+// TestRunCommand_ApprovalBadAddr: a non-loopback --approval-addr with an
+// approval-list is rejected by approval.New before the proxy starts (1).
+func TestRunCommand_ApprovalBadAddr(t *testing.T) {
+	quiet(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ganimedes.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"approve":["email.send"]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	args := []string{
+		"run",
+		"--config", cfgPath,
+		"--log", filepath.Join(dir, "audit.jsonl"),
+		"--signing-key", filepath.Join(dir, "signing.key"),
+		"--approval-addr", "0.0.0.0:8765",
+		"--", "x",
+	}
+	if got := Run(args); got != 1 {
+		t.Errorf("run with non-loopback approval addr = %d, want 1", got)
+	}
+}
+
+// TestRunCommand_ApprovalAddrInUse: when the approval address is already bound,
+// Start fails and run exits 1 before proxying.
+func TestRunCommand_ApprovalAddrInUse(t *testing.T) {
+	quiet(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ganimedes.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"approve":["email.send"]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	args := []string{
+		"run",
+		"--config", cfgPath,
+		"--log", filepath.Join(dir, "audit.jsonl"),
+		"--signing-key", filepath.Join(dir, "signing.key"),
+		"--approval-addr", ln.Addr().String(),
+		"--", "x",
+	}
+	if got := Run(args); got != 1 {
+		t.Errorf("run with occupied approval addr = %d, want 1", got)
 	}
 }
 

@@ -17,11 +17,12 @@ import (
 )
 
 // Config describes how Ganimedes should run: which downstream MCP server to
-// spawn, with what arguments, and which tool names to block.
+// spawn, with what arguments, and which tool names to block or hold for approval.
 //
 // The JSON tags are the on-disk field names. Command/Args may be omitted in the
-// file and supplied on the command line instead; Deny is the tool deny-list
-// (default-allow: only the names listed here are blocked).
+// file and supplied on the command line instead; Deny is the tool deny-list and
+// Approve the human-in-the-loop list (both default-allow: only the names listed
+// are treated specially).
 type Config struct {
 	// Command is the executable of the real MCP server to wrap.
 	Command string `json:"command"`
@@ -32,6 +33,13 @@ type Config struct {
 	// JSON-RPC error and the attempt is recorded in the audit log. Everything
 	// not listed is allowed (default-allow); see docs/DESIGN.md.
 	Deny []string `json:"deny"`
+	// Approve lists tool names that require human approval before they reach the
+	// real server (milestone 4). A tools/call whose name is in this list is
+	// paused and shown on the local approval page; the human's decision (or a
+	// timeout) is recorded in the audit log. Everything not listed is allowed
+	// (default-allow), and a tool on both lists is denied (deny wins, the
+	// stricter verdict); see docs/DESIGN.md and internal/policy.
+	Approve []string `json:"approve"`
 }
 
 // Load reads and parses a JSON config file at path.
