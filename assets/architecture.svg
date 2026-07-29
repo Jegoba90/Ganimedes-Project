@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 486" role="img"
+     aria-label="Ganimedes inline MCP gateway architecture"
+     font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3.5"
+            orient="auto-start-reverse">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#8593a6"/>
+    </marker>
+  </defs>
+
+  <rect x="6" y="6" width="1028" height="474" rx="18" fill="#f7f8fa" stroke="#e4e8ee"/>
+  <text x="40" y="48" font-size="12" letter-spacing="2" fill="#95a2b3">GANIMEDES · INLINE MCP GATEWAY</text>
+
+  <!-- links (drawn first, masked under the shields) -->
+  <line x1="260" y1="250" x2="380" y2="250" stroke="#8593a6" stroke-width="1.6"
+        marker-start="url(#ar)" marker-end="url(#ar)"/>
+  <line x1="680" y1="250" x2="800" y2="250" stroke="#8593a6" stroke-width="1.6"
+        marker-start="url(#ar)" marker-end="url(#ar)"/>
+
+  <!-- Agent -->
+  <rect x="80" y="200" width="180" height="100" rx="12" fill="#ffffff" stroke="#5b7fb0" stroke-width="1.6"/>
+  <text x="170" y="246" text-anchor="middle" font-size="17" fill="#1b2431">Agent</text>
+  <text x="170" y="267" text-anchor="middle" font-size="12" fill="#66748a">MCP client</text>
+
+  <!-- Gateway container -->
+  <rect x="380" y="104" width="300" height="292" rx="16" fill="#eef1f6" stroke="#c6d0de" stroke-width="1.6"/>
+  <text x="530" y="132" text-anchor="middle" font-size="14.5" fill="#33425a" font-weight="600">Ganimedes gateway</text>
+  <text x="530" y="150" text-anchor="middle" font-size="11" fill="#7a889d">single Go binary</text>
+
+  <!-- Human approval chip -->
+  <rect x="404" y="162" width="252" height="56" rx="10" fill="#ffffff" stroke="#d5dde9"/>
+  <text x="530" y="186" text-anchor="middle" font-size="13.5" fill="#1b2431">Human approval</text>
+  <text x="530" y="204" text-anchor="middle" font-size="11" fill="#6b7a8f">localhost page</text>
+
+  <!-- Policy chip (aligned with the main line) -->
+  <rect x="404" y="222" width="252" height="56" rx="10" fill="#ffffff" stroke="#aebfd6" stroke-width="1.6"/>
+  <text x="530" y="246" text-anchor="middle" font-size="13.5" fill="#1b2431" font-weight="600">Policy</text>
+  <text x="530" y="264" text-anchor="middle" font-size="11" fill="#6b7a8f">deny · approve</text>
+
+  <!-- Audit chip -->
+  <rect x="404" y="282" width="252" height="56" rx="10" fill="#ffffff" stroke="#d5dde9"/>
+  <text x="530" y="306" text-anchor="middle" font-size="13.5" fill="#1b2431">Signed audit log</text>
+  <text x="530" y="324" text-anchor="middle" font-size="11" fill="#6b7a8f">hash-chained</text>
+
+  <!-- MCP Server -->
+  <rect x="800" y="200" width="180" height="100" rx="12" fill="#ffffff" stroke="#6f9e4d" stroke-width="1.6"/>
+  <text x="890" y="246" text-anchor="middle" font-size="17" fill="#1b2431">MCP Server</text>
+  <text x="890" y="267" text-anchor="middle" font-size="12" fill="#66748a">real tools</text>
+
+  <!-- Shield 1 (agent / gateway boundary) -->
+  <circle cx="320" cy="250" r="16" fill="#f7f8fa"/>
+  <path d="M308,237 L332,237 L332,249 Q332,260 320,265 Q308,260 308,249 Z" fill="#e7b64d" stroke="#c2912f" stroke-width="1.2"/>
+  <path d="M315,249 L318.5,254 L326,244" fill="none" stroke="#5a3d0a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Shield 2 (gateway / server boundary) -->
+  <circle cx="740" cy="250" r="16" fill="#f7f8fa"/>
+  <path d="M728,237 L752,237 L752,249 Q752,260 740,265 Q728,260 728,249 Z" fill="#e7b64d" stroke="#c2912f" stroke-width="1.2"/>
+  <path d="M735,249 L738.5,254 L746,244" fill="none" stroke="#5a3d0a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- caption -->
+  <text x="530" y="444" text-anchor="middle" font-size="12.5" fill="#8492a4">Every tools/call is inspected, then allowed, denied, or held for approval, and signed into the audit log.</text>
+</svg>
