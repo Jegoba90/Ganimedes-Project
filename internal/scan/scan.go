@@ -39,12 +39,15 @@ const scanTimeout = 15 * time.Second
 // is not required. Made configurable later if a server rejects it.
 const protocolVersion = "2024-11-05"
 
-// clientName/clientVersion identify the scanner in the initialize handshake so a
-// server's logs show who connected.
-const (
-	clientName    = "ganimedes-scan"
-	clientVersion = "0.0.0-dev"
-)
+// clientName identifies the scanner in the initialize handshake so a server's
+// logs show who connected.
+const clientName = "ganimedes-scan"
+
+// clientVersion is the other half of that identity. It is a var, not a const, so
+// the release workflow can stamp the real tag into it at link time, the same way
+// it stamps internal/cli.version: a scanner announcing itself to a server should
+// not claim to be a dev build when it is a released one (Art. 2.4).
+var clientVersion = "0.0.0-dev"
 
 // JSON-RPC ids for the two requests scan sends. Fixed values are enough: the
 // exchange is strictly sequential (one request, then its response) so there is

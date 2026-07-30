@@ -23,8 +23,8 @@ problem, and it's the only one v0 has.
 | Need | Why | Notes |
 |------|-----|-------|
 | CI (GitHub Actions) | Build + `go vet` + tests on every push/PR | **Done**, see `.github/workflows/ci.yml`. Cross-platform matrix (Linux/macOS/Windows) for build+test; single-OS for lint/security since those are text-content checks. Mirrors the rigor of CryptoCapi's `quality-gate.yml`: `golangci-lint` (lint), `gofmt` (format), `go test -race` (tests + concurrency safety), `govulncheck` + Gitleaks + Trivy (security), CodeQL (SAST). Circular imports and "type coverage" are not needed as separate checks: Go's compiler rejects the former and enforces full static typing by construction. **Known limitation:** the repo is private, and GitHub's Code Scanning (Security tab) requires GitHub Advanced Security, which is only free on public repos. CodeQL still runs and finds issues, but results upload as a downloadable artifact instead of the Security tab (`upload: never`), same workaround as CryptoCapi. Revisit once the repo goes public. |
-| Release automation | Cross-compile for target OS/arch, attach binaries to GitHub Releases | `goreleaser` is the Go community standard for this; avoids hand-rolled release scripts |
-| Checksums for releases | Users of a *security* tool will want to verify what they downloaded | A `SHA256SUMS` file per release is the minimum bar; code signing is a later hardening step |
+| Release automation | Cross-compile for target OS/arch, attach binaries to GitHub Releases | **Written** (2026-07-30, not yet exercised on GitHub), see `.github/workflows/release.yml`. Hand-rolled rather than `goreleaser` (decision recorded in §3). Triggered by pushing a `vX.Y.Z` tag; `workflow_dispatch` runs the same build as a dry run that publishes nothing. Six targets: linux, darwin and windows on amd64 and arm64. The version is stamped into the binary at link time (`-ldflags -X`), and the workflow re-runs `go vet` + `go test` at the tagged commit before building anything. |
+| Checksums for releases | Users of a *security* tool will want to verify what they downloaded | **Done**: each release ships a `SHA256SUMS` file covering the binaries themselves (not archives), so what a user verifies is byte-for-byte the file they execute. Code signing is a later hardening step. |
 
 That's the entire list. No servers, no database, no paid cloud account.
 
@@ -54,6 +54,23 @@ a constraint on future design, not just a v0 scoping note.
 
 | Decision | Options | Notes |
 |----------|---------|-------|
-| Release tooling | `goreleaser` vs hand-rolled GitHub Actions | Leaning `goreleaser`: purpose-built for exactly this, widely used in the Go ecosystem |
-| Supported platforms at launch | linux/amd64, darwin/amd64, darwin/arm64, windows/amd64 (the obvious four) vs a narrower first cut | Needs a decision once we're close to a shippable v0 |
-| Binary signing | none (v0) vs `cosign`/similar | Deferred; checksums are the v0 bar, signing is a later hardening step |
+| Binary signing | none (v0) vs `cosign`/similar | **Still open.** Deferred; checksums are the v0 bar, signing is a later hardening step. Worth revisiting if the project ever distributes through a channel where a checksum on the same page as the download is not enough. |
+
+### Resolved
+
+**Release tooling: hand-rolled GitHub Actions, not `goreleaser`** (decided
+2026-07-30, reversing the earlier "leaning `goreleaser`" note). `goreleaser` is
+the community standard and would have worked, but the whole release path is one
+`go build` loop over six targets, and keeping it that way means the pipeline that
+produces a security binary is readable end to end in the same file that runs it,
+with no external tool version to pin, trust, or keep current. That is the same
+argument Art. 1.1 makes about runtime dependencies, applied to the build. The features
+that justify `goreleaser` for most projects (Homebrew taps, archive formats,
+generated changelogs, SBOMs, snapshot builds) are all v0 non-goals. Revisit if
+packaging demands grow past what plain `go build` covers.
+
+**Supported platforms at launch: six targets** (decided 2026-07-30):
+`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`,
+`windows/arm64`. The earlier note proposed four; the two arm64 additions cost
+nothing, because cgo is already off and cross-compiling is a pure matrix
+expansion on a single runner, and they cover ARM servers and Windows on ARM.

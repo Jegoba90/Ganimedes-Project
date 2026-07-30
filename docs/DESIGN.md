@@ -54,19 +54,21 @@ instead of at the server directly. That is the adoption win.
 
 ## 5. Build order
 
-Each step is a checkpoint that works on its own. **Status (2026-07-29): all four
-steps are code-complete. Steps 1 and 2 are shipped and on `main`; step 3
+Each step is a checkpoint that works on its own. **Status (2026-07-30): all four
+code steps are complete and on `main`.** Steps 1 and 2 are shipped; step 3
 (deny-list) plus its two companions (the `scan` command and the audit RFC 8785 +
-Ed25519 upgrade) are done; and step 4 (human-in-the-loop) is now implemented too,
-the last v0 milestone. Only the user-driven manual smokes remain.** See
+Ed25519 upgrade) are done; and step 4 (human-in-the-loop) is implemented too, the
+last v0 code milestone. What remains is step 5, releasing it, which is not code:
+it is verification the code cannot do for itself plus one decision. See
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3, §5, §6, and §8 for the per-milestone task
 lists.
 
-**Progress: 4/4 v0 milestones code-complete; overall v0 release readiness ~70%.**
-The remaining ~30% is verification (CI confirmation on all three OSes, the
-user-driven manual smokes) and release logistics (a license, verifiable release
-artifacts). The full release gate, with the weighted breakdown behind that
-number, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
+**Progress: 4/4 v0 milestones code-complete; overall v0 release readiness ~73%.**
+The remaining ~27% is verification (CI confirmation on all three OSes, the
+user-driven manual smokes) and release logistics: the release pipeline itself
+landed 2026-07-30 (`.github/workflows/release.yml`), so what is left there is a
+license and the act of tagging. The full release gate, with the weighted breakdown
+behind that number, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
 
 1. ✅ **Transparent passthrough.** The proxy only forwards. Proves we can sit in
    the middle without breaking MCP. *Milestone: the agent works exactly as
@@ -96,8 +98,32 @@ number, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
    3.4). *Milestone: the 30-second demo.* See `ARCHITECTURE.md` §8/§9 and the
    decision-log entry below.
 
+5. ⬜ **Release v0.** No new features: the remaining work is proving what is
+   already built and deciding one thing. In order, because each step can
+   invalidate the next:
+   1. **Confirm CI is green** on Linux, macOS and Windows for the head of `main`.
+   2. **Run the manual smokes** against a real MCP server. These are the only
+      checks no automated test replaces, because they exercise a server we did
+      not write. A failure here is a code bug and sends this step back to the
+      milestone it belongs to.
+   3. **Choose a license.** The one item that is a decision rather than a
+      verification, and the hard blocker on making the repository public. Step 4
+      must not happen before it: a tag published under no license is a tag
+      published under no license, and deleting it does not undo the download.
+   4. **Push the tag.** `.github/workflows/release.yml` (2026-07-30) then re-runs
+      the tests at that commit, cross-compiles six targets with the version
+      stamped in, and publishes the binaries with `SHA256SUMS` (Art. 5.2). The
+      pipeline can be rehearsed before this with `workflow_dispatch`, which builds
+      and verifies but publishes nothing.
+
+   The checklist those steps are graded against, with per-item evidence and the
+   current verdict, is [`GO_NO_GO.md`](GO_NO_GO.md); it is the single source of
+   truth for readiness, and this list only says what order to attack it in.
+   Packaging decisions (hand-rolled pipeline, six targets, no signing in v0) live
+   in [`INFRA.md`](INFRA.md).
+
 Rationale: prove the riskiest piece (the pipe) first; ship the most valuable and
-cheapest piece (audit) second.
+cheapest piece (audit) second; release only what has been checked, last.
 
 ## 6. Open decisions
 

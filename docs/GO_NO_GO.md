@@ -7,13 +7,14 @@
 > (Constitution Art. 2.4, 6.3): a criterion is GO only when it is enforced and
 > checked, never because it is expected to pass.
 
-**Current verdict (2026-07-29): NO-GO.** All four v0 milestones are code-complete
-and pushed to `main` (M4: `a096fb8` + `128423f`), and the local gate is green, but
-CI has not yet been confirmed green on all three OSes, the user-driven manual
-smokes have not been run, and the license is undefined. See "Blocking items" at the
-bottom for exactly what flips this to GO.
+**Current verdict (2026-07-30): NO-GO.** All four v0 milestones are code-complete
+and pushed to `main` (M4: `a096fb8` + `128423f`), the local gate is green, and the
+release pipeline now exists (`.github/workflows/release.yml`, 2026-07-30). Still
+blocking: CI has not been confirmed green on all three OSes, the user-driven manual
+smokes have not been run, the license is undefined, and no artifacts have actually
+been cut. See "Blocking items" at the bottom for exactly what flips this to GO.
 
-## Progress toward GO: ~70%
+## Progress toward GO: ~73%
 
 Weighted by remaining effort to a v0 public release. The engineering is done and
 merged; what remains is verification (CI + smokes) and release logistics (license,
@@ -23,26 +24,28 @@ signed artifacts).
 |-----------|:------:|:--------:|:------------:|
 | v0 engineering (M1-M4 code-complete, on `main`) | 55% | ✅ 100% | 55.0 |
 | Documentation (spec, architecture, go/no-go, behavior sync) | 10% | ✅ 100% | 10.0 |
-| CI green on Linux/macOS/Windows | 10% | ⏳ ~50% (pushed 2026-07-29, running) | 5.0 |
+| CI green on Linux/macOS/Windows | 10% | ⏳ ~50% (the full gate passes locally on Windows; no run on `main` has been confirmed green here) | 5.0 |
 | Manual smokes F1-F5 (user-driven) | 15% | ⛔ 0% | 0.0 |
 | License chosen | 5% | ⛔ 0% | 0.0 |
-| Verifiable release artifacts | 5% | ⛔ 0% | 0.0 |
-| **Total** | **100%** | | **~70%** |
+| Verifiable release artifacts | 5% | ⏳ ~60% (pipeline written, its build logic reproduced and checked locally, never yet executed on GitHub) | 3.0 |
+| **Total** | **100%** | | **~73%** |
 
-Progress bar: `██████████████░░░░░░` 70%
+Progress bar: `██████████████░░░░░░` 73% (each block is 5%, so the bar rounds
+down; it never shows more progress than the table supports).
 
 ## 1. Verdict summary
 
 | Area | Criterion | Status |
 |------|-----------|--------|
 | Build order | M1 passthrough, M2 audit, M3 deny+scan+seal, M4 approval all code-complete | ✅ code-complete |
-| CI gate | build, vet, gofmt, golangci-lint, go test (-race on Linux), govulncheck, Gitleaks, CodeQL green on Linux/macOS/Windows | ⏳ M4 pushed 2026-07-29, CI running / not yet confirmed green |
+| CI gate | build, vet, gofmt, golangci-lint, go test (-race on Linux), govulncheck, Gitleaks, CodeQL green on Linux/macOS/Windows | ⏳ not confirmed green here |
 | Coverage ratchet | no package coverage decreases (Art. 4.2) | ✅ held/improved locally |
 | Zero-dependency | standard library only, single static binary (Art. 1.1, 5.1) | ✅ verified |
 | Docs-code sync | DESIGN / ARCHITECTURE / SEQUENCES / README describe actual behavior (Art. 6.2) | ✅ synced for M4 |
 | Manual smokes | passthrough, audit+verify, deny, scan, approval (approve/reject/timeout) confirmed against a real MCP server | ⏳ pending (user) |
 | Security posture | fail-closed, local-first, stdout-sacred, tamper-evident audit, loopback-only approval (Art. 2.x, 3.x) | ✅ by construction, ⏳ smoke-confirmed |
 | Non-goals | out-of-scope items explicitly listed and not shipped (README, USE_CASES) | ✅ documented |
+| Release artifacts | six cross-compiled binaries + `SHA256SUMS` published for the tag (Art. 5.2) | ⏳ pipeline ready, nothing cut yet |
 | License | a license chosen before the repo goes public | ⛔ undefined |
 
 Legend: ✅ GO, ⏳ in progress / not yet verified, ⛔ NO-GO blocker.
@@ -60,8 +63,10 @@ with any competitor or a hosted tier; those are explicitly out of v0 (README,
 - **G1 - Full CI green on all three OSes.** `go build`, `go vet`, `gofmt`,
   `golangci-lint` (no suppressions), `go test` (with `-race` where the runner has
   cgo, i.e. Linux), `govulncheck`, Gitleaks, CodeQL. No `[skip ci]`, no bypass
-  (Art. 4.3). *Status: local gate green on Windows (cgo off); M4 pushed to `main`
-  2026-07-29, CI running. NOT satisfied until CI is confirmed green on all three OSes.*
+  (Art. 4.3). *Status: the full gate passes locally on Windows (cgo off, so no
+  `-race`), last run 2026-07-30. That is not this gate: it is one OS and a subset
+  of the checks. NOT satisfied until a run on `main` is confirmed green on all
+  three OSes.*
 - **G2 - Coverage ratchet.** No package decreases vs. its prior baseline
   (Art. 4.2). *Status locally:* config 100%, policy 100%, approval 96.7% (new),
   audit 83.1% (=), cli 94.8% (up from 93.6), proxy 84.5% (up from 82.4), scan 86.8%
@@ -142,7 +147,13 @@ only if real users ask (README, `USE_CASES.md`).
 3. **Choose a license** and replace the README placeholder (⛔ hard blocker for
    going public).
 4. **Cut verifiable release artifacts** (cross-compiled binaries + checksums,
-   Art. 5.2) once 1-3 are done.
+   Art. 5.2) once 1-3 are done. The automation for this landed 2026-07-30
+   (`.github/workflows/release.yml`): pushing a `vX.Y.Z` tag re-runs the tests at
+   that commit, cross-compiles six targets with the tag stamped into the binary,
+   proves the stamp took by executing the linux/amd64 build, writes `SHA256SUMS`,
+   and publishes the GitHub Release. What remains is the act of tagging, which
+   must not happen before items 1-3. `workflow_dispatch` runs everything except
+   publishing, so the pipeline can be exercised beforehand.
 
 When items 1-4 are satisfied and Sections 3-5 read all ✅, this document is flipped
 to **GO** with a dated sign-off here.
@@ -152,3 +163,4 @@ to **GO** with a dated sign-off here.
 | Date | Verdict | Note |
 |------|---------|------|
 | 2026-07-29 | NO-GO (~70%) | v0 code-complete and pushed to `main` (M4 `a096fb8`+`128423f`); CI not yet confirmed green, manual smokes pending, license undefined. |
+| 2026-07-30 | NO-GO (~73%) | Release pipeline added (blocking item 4's automation). Its build steps were reproduced and checked locally, but the workflow itself has not run on GitHub yet. Items 1-3 unchanged: CI confirmation, manual smokes F1-F5, and the license all still block. |

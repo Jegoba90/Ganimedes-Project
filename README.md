@@ -93,6 +93,7 @@ same four pillars, each earned by real adoption before it is built:
 | Audit log      | JSONL file, SHA-256 hash chain                        | in use  |
 | Audit signing  | RFC 8785 canonical JSON + Ed25519 signatures          | in use  |
 | Approval UI    | minimal HTML page served on localhost via `net/http`  | in use  |
+| Releases       | tag-triggered GitHub Actions, 6 targets + `SHA256SUMS` | in use  |
 
 No frontend framework: the only UI is a small local approval page served
 directly by the Go binary. Everything else is a CLI/proxy with no screen.

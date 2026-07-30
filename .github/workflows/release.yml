@@ -1,0 +1,192 @@
+name: 🚀 Release
+
+# Two ways in:
+#
+#   * push a tag `vX.Y.Z`  -> build, verify, and publish a GitHub Release.
+#   * workflow_dispatch    -> build and verify only, artifacts land in the run
+#                             summary and nothing is published. This exists so a
+#                             broken release pipeline is discovered on a dry run
+#                             instead of at tag time, when the tag already exists.
+#
+# Cutting a release is therefore a deliberate manual act (creating the tag), not
+# something that happens on a merge.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false # never abort a half-published release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # create the Release and upload its assets
+    env:
+      # Ship exactly what CI tested: a fully static, cgo-free binary
+      # (Constitution Art. 5.1). Cross-compiling is free for us precisely
+      # because cgo is off, so the whole matrix builds on one runner.
+      CGO_ENABLED: "0"
+      MODULE: github.com/Jegoba90/Ganimedes-Project
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The version string is the tag itself on a tag push. On a manual dry run
+      # there is no tag, so the binaries are marked as the dev build they are:
+      # a release artifact never silently claims a version it does not have
+      # (Art. 2.4).
+      - name: 🏷️ Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="0.0.0-dev+$(git rev-parse --short HEAD)"
+          fi
+          # The filename prefix is derived once, here, because three later steps
+          # need it (build, verify, checksums) and each runs in its own shell.
+          # Naming the artifacts in three places would let them drift apart.
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "prefix=ganimedes_${version}" >> "$GITHUB_OUTPUT"
+          echo "Building version ${version}"
+
+      # CI already ran the full three-OS gate on `main`. This is the last line of
+      # defence: never cut artifacts from code whose tests were not run at the
+      # exact commit being shipped (Art. 4.3, no bypass).
+      - name: 🧪 Test the exact commit being shipped
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./... -cover
+
+      # The linker ignores an -X for a symbol it cannot find: no error, no
+      # warning, the value simply stays at its default. A rename or a package
+      # move would therefore ship "0.0.0-dev" binaries in total silence. Assert
+      # the symbols exist first, against an unstripped build (the release build
+      # uses -s -w, which removes the symbol table nm reads).
+      - name: 🔎 Guard - the stamped symbols still exist
+        run: |
+          set -euo pipefail
+          probe="${RUNNER_TEMP}/ganimedes-symprobe"
+          go build -o "${probe}" ./cmd/ganimedes
+          for sym in "${MODULE}/internal/cli.version" "${MODULE}/internal/scan.clientVersion"; do
+            if ! go tool nm "${probe}" | grep -qF " ${sym}"; then
+              echo "::error::symbol ${sym} not found; the -ldflags -X in this workflow would be silently ignored"
+              exit 1
+            fi
+            echo "ok: ${sym}"
+          done
+
+      - name: 🔨 Cross-compile
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PREFIX: ${{ steps.version.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # -trimpath strips local filesystem paths so the binary does not carry
+          # the runner's directory layout. -s -w drops the symbol table and DWARF
+          # data: smaller download, and nothing a user needs to run it.
+          ldflags="-s -w"
+          ldflags="${ldflags} -X ${MODULE}/internal/cli.version=${VERSION}"
+          ldflags="${ldflags} -X ${MODULE}/internal/scan.clientVersion=${VERSION}"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            ext=""
+            if [ "${goos}" = "windows" ]; then ext=".exe"; fi
+            out="dist/${PREFIX}_${goos}_${goarch}${ext}"
+            echo "==> ${out}"
+            GOOS="${goos}" GOARCH="${goarch}" go build \
+              -trimpath \
+              -ldflags "${ldflags}" \
+              -o "${out}" \
+              ./cmd/ganimedes
+          done
+          ls -l dist
+
+      # Claim nothing that was not checked (Art. 2.4). The runner is
+      # linux/amd64, so that one binary can be executed here to prove the
+      # stamping actually worked instead of assuming the linker flag took.
+      - name: ✅ Verify the built binary reports this version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PREFIX: ${{ steps.version.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          got="$("./dist/${PREFIX}_linux_amd64" version)"
+          want="ganimedes ${VERSION}"
+          echo "got:  ${got}"
+          echo "want: ${want}"
+          [ "${got}" = "${want}" ]
+
+      # Users of a security tool must be able to check what they downloaded
+      # (Art. 5.2). Checksums cover the binaries themselves, not an archive, so
+      # what you verify is exactly the file you execute.
+      - name: 🔐 Checksums
+        env:
+          PREFIX: ${{ steps.version.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum "${PREFIX}"_* > SHA256SUMS
+          cat SHA256SUMS
+
+      # Kept for dry runs and as a fallback copy of what a tag published.
+      - name: 📦 Upload artifacts to the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ganimedes-${{ steps.version.outputs.version }}
+          path: dist/
+          retention-days: 14
+
+      - name: 📝 Release notes
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<EOF
+          Ganimedes ${VERSION}: a local, zero-dependency security gateway for MCP servers.
+
+          Every binary below is a single static file with no runtime to install.
+          Download the one for your platform, make it executable, and run it.
+
+          ### Verify your download
+
+          \`\`\`sh
+          sha256sum -c SHA256SUMS --ignore-missing
+          ganimedes version   # must print: ganimedes ${VERSION}
+          \`\`\`
+
+          The checksums cover the binaries as published; they are produced by the
+          workflow that built them (\`.github/workflows/release.yml\`), from the
+          commit this tag points at, with tests run at that same commit.
+          EOF
+          cat release-notes.md
+
+      - name: 🚀 Publish the GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # --verify-tag refuses to invent a tag: the tag must already exist on
+          # the remote, which it does, since pushing it is what started this run.
+          gh release create "${VERSION}" \
+            --title "Ganimedes ${VERSION}" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            dist/*

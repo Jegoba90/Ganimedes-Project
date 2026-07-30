@@ -23,9 +23,12 @@ import (
 	"github.com/Jegoba90/Ganimedes-Project/internal/scan"
 )
 
-// version is stamped by hand for now. Later it can be injected at build time
-// with -ldflags "-X ...". Keeping it inline keeps v0 dependency-free.
-const version = "0.0.0-dev"
+// version is what `ganimedes version` prints. It is a var, not a const, so the
+// release workflow can stamp the tag into it at link time with -ldflags "-X"
+// (see .github/workflows/release.yml); that needs no dependency, only the
+// linker. A local `go build` leaves the default, so a binary reporting
+// 0.0.0-dev is telling the truth: it did not come from a release.
+var version = "0.0.0-dev"
 
 // defaultLogPath is where the audit log lives when no --log is given. A path in
 // the current directory keeps v0 transparent (you can see and cat the file);
