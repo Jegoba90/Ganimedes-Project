@@ -79,9 +79,17 @@ jobs:
         run: |
           set -euo pipefail
           probe="${RUNNER_TEMP}/ganimedes-symprobe"
+          symbols="${RUNNER_TEMP}/ganimedes-symbols.txt"
           go build -o "${probe}" ./cmd/ganimedes
+          # nm's output lands in a file instead of a pipe into grep. `grep -q`
+          # exits at its first match, the SIGPIPE that follows kills nm, and
+          # `pipefail` then reports the whole pipeline as failed even though the
+          # symbol was found: the guard fired precisely when the symbol existed.
+          # Writing it as a pipe survived local verification because Windows has
+          # no SIGPIPE, so only a Linux runner could surface it.
+          go tool nm "${probe}" > "${symbols}"
           for sym in "${MODULE}/internal/cli.version" "${MODULE}/internal/scan.clientVersion"; do
-            if ! go tool nm "${probe}" | grep -qF " ${sym}"; then
+            if ! grep -qF " ${sym}" "${symbols}"; then
               echo "::error::symbol ${sym} not found; the -ldflags -X in this workflow would be silently ignored"
               exit 1
             fi
