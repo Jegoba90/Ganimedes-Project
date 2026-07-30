@@ -1,0 +1,68 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(900px 520px at 22% 28%, #2A0E5C 0%, rgba(42,14,92,0) 62%),
+      linear-gradient(140deg, #0C0618 0%, #150A2B 55%, #0C0618 100%);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    color: #EDE7FF;
+    position: relative;
+  }
+
+  /* Faint pixel grid, echoing the pixel-art mark without competing with it. */
+  .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(to right, rgba(139,92,246,.055) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(139,92,246,.055) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .wrap { display: flex; align-items: center; gap: 72px; padding: 0 96px; z-index: 1; }
+
+  .moon { width: 268px; height: 268px; image-rendering: pixelated; flex: none; }
+
+  .title { width: 540px; display: block; }
+
+  .tag {
+    margin-top: 26px;
+    font-size: 30px;
+    line-height: 1.32;
+    color: #C9BCEC;
+    max-width: 560px;
+    font-weight: 400;
+  }
+
+  .rule { margin-top: 30px; width: 108px; height: 4px; background: #8B5CF6; }
+
+  .meta {
+    margin-top: 26px;
+    font-size: 21px;
+    letter-spacing: .04em;
+    color: #8E7FB8;
+    display: flex; gap: 14px; align-items: center;
+  }
+  .meta b { color: #B69CF6; font-weight: 600; }
+  .dot { color: #4C1D95; }
+</style>
+
+<div class="grid"></div>
+
+<div class="wrap">
+  <img class="moon" src="ganimedes-logo.svg" alt="">
+  <div>
+    <img class="title" src="ganimedes-title-light.svg" alt="Ganimedes">
+    <div class="tag">Control and prove what AI agents <b>do</b>,<br>not just what they know.</div>
+    <div class="rule"></div>
+    <div class="meta">
+      <span>MCP gateway</span><span class="dot">&bull;</span>
+      <span>Go, <b>zero dependencies</b></span><span class="dot">&bull;</span>
+      <span>Apache-2.0</span>
+    </div>
+  </div>
+</div>
