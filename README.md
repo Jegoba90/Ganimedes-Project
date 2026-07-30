@@ -103,4 +103,12 @@ order.
 
 ## License
 
-To be defined before the repository goes public.
+[Apache License 2.0](LICENSE). Copyright 2026 Jegoba90.
+
+Use it, fork it, embed it in a commercial product. Apache-2.0 was chosen over
+MIT for the two clauses MIT lacks, and both matter for a tool you are asked to
+put inside your agent's toolchain: an explicit patent grant, so adopting it
+carries no patent ambiguity, and an explicit statement that the license grants
+no trademark rights. Ganimedes has no third-party dependencies, so this single
+license covers the whole work, code and assets alike, with no attribution
+obligations inherited from anyone else.

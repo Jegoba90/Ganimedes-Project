@@ -1,36 +1,38 @@
 # Ganimedes v0 GO / NO-GO
 
-> Release-readiness gate for the **v0 public release** (tagging v0 and making the
-> repository public; the README license is deliberately "to be defined before the
-> repository goes public"). This is a living checklist: mark an item WIP before
+> Release-readiness gate for the **v0 public release**: tagging v0 and making the
+> repository public. This is a living checklist: mark an item WIP before
 > touching it, flip it to a status only when the evidence exists. Honest by rule
 > (Constitution Art. 2.4, 6.3): a criterion is GO only when it is enforced and
 > checked, never because it is expected to pass.
 
 **Current verdict (2026-07-30): NO-GO.** All four v0 milestones are code-complete
-and pushed to `main` (M4: `a096fb8` + `128423f`), the local gate is green, and the
-release pipeline now exists (`.github/workflows/release.yml`, 2026-07-30). Still
-blocking: CI has not been confirmed green on all three OSes, the user-driven manual
-smokes have not been run, the license is undefined, and no artifacts have actually
-been cut. See "Blocking items" at the bottom for exactly what flips this to GO.
+and pushed to `main` (M4: `a096fb8` + `128423f`), the release pipeline exists
+(`.github/workflows/release.yml`), the license is settled (Apache-2.0), CI is
+confirmed green on all three OSes for `275335a`, and **the manual smokes F1-F5 now
+pass against a real MCP server** (2026-07-30, §4). Every substantive verification is
+done. What still blocks GO is mechanical and ordered: commit the pending license
+change, re-confirm CI on that commit, exercise `release.yml` through
+`workflow_dispatch` (nothing has ever run it), then tag. See "Blocking items" at the
+bottom.
 
-## Progress toward GO: ~73%
+## Progress toward GO: ~98%
 
 Weighted by remaining effort to a v0 public release. The engineering is done and
-merged; what remains is verification (CI + smokes) and release logistics (license,
-signed artifacts).
+merged, so is every decision, and so is every verification; what remains is
+publishing the artifacts.
 
 | Component | Weight | Progress | Contribution |
 |-----------|:------:|:--------:|:------------:|
 | v0 engineering (M1-M4 code-complete, on `main`) | 55% | ✅ 100% | 55.0 |
 | Documentation (spec, architecture, go/no-go, behavior sync) | 10% | ✅ 100% | 10.0 |
-| CI green on Linux/macOS/Windows | 10% | ⏳ ~50% (the full gate passes locally on Windows; no run on `main` has been confirmed green here) | 5.0 |
-| Manual smokes F1-F5 (user-driven) | 15% | ⛔ 0% | 0.0 |
-| License chosen | 5% | ⛔ 0% | 0.0 |
+| CI green on Linux/macOS/Windows | 10% | ✅ 100% (green on `275335a`, 2026-07-30) | 10.0 |
+| Manual smokes F1-F5 (user-driven) | 15% | ✅ 100% (all five pass, 2026-07-30) | 15.0 |
+| License chosen | 5% | ✅ 100% (Apache-2.0, 2026-07-30) | 5.0 |
 | Verifiable release artifacts | 5% | ⏳ ~60% (pipeline written, its build logic reproduced and checked locally, never yet executed on GitHub) | 3.0 |
-| **Total** | **100%** | | **~73%** |
+| **Total** | **100%** | | **~98%** |
 
-Progress bar: `██████████████░░░░░░` 73% (each block is 5%, so the bar rounds
+Progress bar: `███████████████████░` 98% (each block is 5%, so the bar rounds
 down; it never shows more progress than the table supports).
 
 ## 1. Verdict summary
@@ -38,15 +40,15 @@ down; it never shows more progress than the table supports).
 | Area | Criterion | Status |
 |------|-----------|--------|
 | Build order | M1 passthrough, M2 audit, M3 deny+scan+seal, M4 approval all code-complete | ✅ code-complete |
-| CI gate | build, vet, gofmt, golangci-lint, go test (-race on Linux), govulncheck, Gitleaks, CodeQL green on Linux/macOS/Windows | ⏳ not confirmed green here |
+| CI gate | build, vet, gofmt, golangci-lint, go test (-race on Linux), govulncheck, Gitleaks, CodeQL green on Linux/macOS/Windows | ✅ green on `275335a` (2026-07-30) |
 | Coverage ratchet | no package coverage decreases (Art. 4.2) | ✅ held/improved locally |
 | Zero-dependency | standard library only, single static binary (Art. 1.1, 5.1) | ✅ verified |
 | Docs-code sync | DESIGN / ARCHITECTURE / SEQUENCES / README describe actual behavior (Art. 6.2) | ✅ synced for M4 |
-| Manual smokes | passthrough, audit+verify, deny, scan, approval (approve/reject/timeout) confirmed against a real MCP server | ⏳ pending (user) |
-| Security posture | fail-closed, local-first, stdout-sacred, tamper-evident audit, loopback-only approval (Art. 2.x, 3.x) | ✅ by construction, ⏳ smoke-confirmed |
+| Manual smokes | passthrough, audit+verify, deny, scan, approval (approve/reject/timeout) confirmed against a real MCP server | ✅ all five pass (2026-07-30) |
+| Security posture | fail-closed, local-first, stdout-sacred, tamper-evident audit, loopback-only approval (Art. 2.x, 3.x) | ✅ by construction and smoke-confirmed |
 | Non-goals | out-of-scope items explicitly listed and not shipped (README, USE_CASES) | ✅ documented |
 | Release artifacts | six cross-compiled binaries + `SHA256SUMS` published for the tag (Art. 5.2) | ⏳ pipeline ready, nothing cut yet |
-| License | a license chosen before the repo goes public | ⛔ undefined |
+| License | a license chosen before the repo goes public | ✅ Apache-2.0, `LICENSE` at the root |
 
 Legend: ✅ GO, ⏳ in progress / not yet verified, ⛔ NO-GO blocker.
 
@@ -63,10 +65,13 @@ with any competitor or a hosted tier; those are explicitly out of v0 (README,
 - **G1 - Full CI green on all three OSes.** `go build`, `go vet`, `gofmt`,
   `golangci-lint` (no suppressions), `go test` (with `-race` where the runner has
   cgo, i.e. Linux), `govulncheck`, Gitleaks, CodeQL. No `[skip ci]`, no bypass
-  (Art. 4.3). *Status: the full gate passes locally on Windows (cgo off, so no
-  `-race`), last run 2026-07-30. That is not this gate: it is one OS and a subset
-  of the checks. NOT satisfied until a run on `main` is confirmed green on all
-  three OSes.*
+  (Art. 4.3). *Status: ✅ satisfied. The run for `275335a` (head of `main`, which
+  includes the release pipeline and the two link-stamped vars) was confirmed green
+  on all three OSes on 2026-07-30. Note what this does and does not cover: it is
+  `ci.yml`, the everyday gate. `release.yml` runs only on a tag or a manual
+  dispatch, so the release pipeline itself is still unexercised. Any commit landing
+  after `275335a`, including the pending license commit, must be green in its own
+  right before a tag is pushed.*
 - **G2 - Coverage ratchet.** No package decreases vs. its prior baseline
   (Art. 4.2). *Status locally:* config 100%, policy 100%, approval 96.7% (new),
   audit 83.1% (=), cli 94.8% (up from 93.6), proxy 84.5% (up from 82.4), scan 86.8%
@@ -81,22 +86,37 @@ with any competitor or a hosted tier; those are explicitly out of v0 (README,
 ## 4. Functional acceptance (manual smokes, user-driven)
 
 Each runs against a real MCP server in the user's environment; automated
-equivalents already pass in CI (Art. 4.1). Status: all ⏳ pending.
+equivalents already pass in CI (Art. 4.1). **Status: all five pass (2026-07-30).**
 
-- **F1 - Transparent passthrough.** An agent wrapped by Ganimedes behaves exactly
-  as if talking to the server directly (Art. 1.3, 6.1).
-- **F2 - Audit + verify.** Every `tools/call` is logged; `ganimedes verify` reports
-  the chain intact and signatures valid; a hand-edit makes `verify` fail with the
-  tampered entry (Art. 2.3).
-- **F3 - Deny.** A tool on the `deny` list returns a JSON-RPC error `code -32000`
-  to the agent, never reaches the server, and is audited with `decision=deny`.
-- **F4 - Scan.** `ganimedes scan` lists a server's tools and flags the risky ones,
-  taking no enforcement action.
-- **F5 - Approval (M4).** A tool on the `approve` list pauses; the local page at
-  `--approval-addr` shows it; **Approve** forwards the call (audited
-  `decision=approved`), **Reject** and a `--approval-timeout` expiry each return a
-  JSON-RPC error to the agent (audited `decision=rejected` / `decision=timeout`,
-  fail-closed).
+Bench: the official `@modelcontextprotocol/server-filesystem` (v0.2.0, 14 tools),
+wrapped by a local build of `main` at `275335a`, driven over stdio by a throwaway
+stdlib-only Go MCP client, on Windows 11. Every assertion below is on observed
+output, a file's presence or absence on disk, and the audit log.
+
+- **F1 - Transparent passthrough.** ✅ The same script (initialize, tools/list,
+  write_file, read_text_file, list_directory) ran twice: once against the server
+  directly, once through Ganimedes. The protocol responses were byte-identical
+  (Art. 1.3, 6.1).
+- **F2 - Audit + verify.** ✅ The three `tools/call` were logged and `verify`
+  reported the chain intact and signatures valid, both with the default key and
+  offline with only `--pubkey`. Editing one entry's content failed with a hash
+  mismatch; deleting a middle entry failed with a broken chain link; both exited 1.
+  Truncating the tail still verified OK, so the limitation recorded in §6 behaves
+  exactly as documented (Art. 2.3, 2.4).
+- **F3 - Deny.** ✅ `write_file` on the deny-list returned JSON-RPC `-32000` to the
+  agent, the target file was never created (the call never reached the server), and
+  the entry was audited `decision=deny`. An allowed call afterwards in the same
+  session succeeded, so a block does not poison the session.
+- **F4 - Scan.** ✅ Listed all 14 tools, flagged 3 (`write_file`,
+  `create_directory`, `move_file`), took no enforcement action, and wrote neither an
+  audit log nor a signing key. It also surfaced one false negative, recorded in §6.
+- **F5 - Approval (M4).** ✅ All three outcomes, each with the call held and listed
+  on the loopback page. **Approve** forwarded it, the server really wrote the file,
+  the agent received the server's own result, audited `decision=approved`.
+  **Reject** returned `-32000` ("a human rejected the call"), no file, audited
+  `decision=rejected`. **Timeout** returned `-32000` ("approval ... timed out"), no
+  file, audited `decision=timeout`. Fail-closed holds: when the runs were over, the
+  only files in the sandbox were the passthrough one and the approved one.
 
 ## 5. Security posture (Constitution-derived, GO by construction)
 
@@ -132,6 +152,20 @@ stay documented (Art. 2.5, 6.3).
   §4).
 - **`-race` runs on Linux only.** Windows has no C compiler; macOS cgo test binary
   hits an `LC_UUID` dyld issue, so CI runs the race detector on Linux.
+- **`0600` is not enforced on Windows.** `run` creates the audit log and the signing
+  key with mode `0600`; POSIX honors that and Windows does not. Checked with
+  `icacls` during the F1-F5 smokes: both files carry only inherited ACLs (SYSTEM,
+  Administrators and the owning user, all Full). On Windows the secrecy of the
+  signing key therefore rests on the ACL of the directory holding it, not on the
+  file mode. Windows is a shipped target, so this is said plainly rather than left
+  implied (Art. 2.4).
+- **`scan` does not flag `edit_file`.** The keyword list has a state-mutation
+  category (`write`, `create`, `insert`, `update`, `rename`, ...) with no `edit` in
+  it, so a tool that rewrites a file's contents is reported `ok`. Found in the F4
+  smoke against the filesystem server. `scan` enforces nothing, so no protection is
+  weakened, but the list is documented as erring toward surfacing and this is a
+  genuine false negative. The fix is one keyword; whether it lands before or after
+  v0 is open.
 
 ## 7. Explicit non-goals for v0 (must stay out)
 
@@ -141,19 +175,30 @@ only if real users ask (README, `USE_CASES.md`).
 
 ## 8. Blocking items (what flips NO-GO to GO)
 
-1. **CI green on Linux/macOS/Windows** (G1). M4 is committed and pushed
-   (2026-07-29); this item is satisfied once CI is confirmed green.
-2. **Run the manual smokes F1-F5** against a real MCP server and record the result.
-3. **Choose a license** and replace the README placeholder (⛔ hard blocker for
-   going public).
+1. ✅ **CI green on Linux/macOS/Windows** (G1). Confirmed green on `275335a`,
+   2026-07-30. Re-confirm for whatever commit is tagged, since the license commit
+   is still pending.
+2. ✅ **Run the manual smokes F1-F5** against a real MCP server and record the
+   result. Done 2026-07-30: all five pass against
+   `@modelcontextprotocol/server-filesystem`, including the three approval outcomes
+   with a human at the page. Per-smoke evidence in §4; the two findings they
+   surfaced are in §6, neither blocking.
+3. ✅ **Choose a license.** Done 2026-07-30: **Apache-2.0**, `LICENSE` at the root,
+   copyright 2026 Jegoba90, README section replaced. Chosen over MIT for the
+   explicit patent grant and the trademark clause, both of which matter for a tool
+   adopters embed in their own agent toolchain; chosen over AGPL because the
+   network-copyleft trigger barely applies to a local binary, so it would cost
+   enterprise adoption without buying protection. The zero-dependency rule (Art.
+   1.1) means no third-party license has to be reconciled with it.
 4. **Cut verifiable release artifacts** (cross-compiled binaries + checksums,
-   Art. 5.2) once 1-3 are done. The automation for this landed 2026-07-30
+   Art. 5.2) once item 2 is done. The automation for this landed 2026-07-30
    (`.github/workflows/release.yml`): pushing a `vX.Y.Z` tag re-runs the tests at
    that commit, cross-compiles six targets with the tag stamped into the binary,
    proves the stamp took by executing the linux/amd64 build, writes `SHA256SUMS`,
    and publishes the GitHub Release. What remains is the act of tagging, which
-   must not happen before items 1-3. `workflow_dispatch` runs everything except
-   publishing, so the pipeline can be exercised beforehand.
+   must not happen before item 2. `workflow_dispatch` runs everything except
+   publishing, so the pipeline can be exercised beforehand, and should be: nothing
+   has ever executed it.
 
 When items 1-4 are satisfied and Sections 3-5 read all ✅, this document is flipped
 to **GO** with a dated sign-off here.
@@ -164,3 +209,6 @@ to **GO** with a dated sign-off here.
 |------|---------|------|
 | 2026-07-29 | NO-GO (~70%) | v0 code-complete and pushed to `main` (M4 `a096fb8`+`128423f`); CI not yet confirmed green, manual smokes pending, license undefined. |
 | 2026-07-30 | NO-GO (~73%) | Release pipeline added (blocking item 4's automation). Its build steps were reproduced and checked locally, but the workflow itself has not run on GitHub yet. Items 1-3 unchanged: CI confirmation, manual smokes F1-F5, and the license all still block. |
+| 2026-07-30 | NO-GO (~78%) | License decided: Apache-2.0, `LICENSE` at the root, copyright 2026 Jegoba90. Blocking item 3 closes, and with it the last item that was a decision rather than a check. Remaining: confirm CI green on the three OSes, run the manual smokes, then tag. |
+| 2026-07-30 | NO-GO (~83%) | G1 satisfied: CI confirmed green on all three OSes for `275335a` (the head of `main`, covering the release pipeline and the link-stamped vars). Blocking item 1 closes. The manual smokes F1-F5 are now the only substantive work left before a tag. |
+| 2026-07-30 | NO-GO (~98%) | Manual smokes F1-F5 all pass against a real MCP server, the approval ones with a human at the page. Blocking item 2 closes, and with it the last substantive verification: every remaining step is an act, not a question. Two findings recorded in §6, neither blocking (Windows does not enforce `0600`; `scan` misses `edit_file`). Remaining: commit the pending license change, re-confirm CI on it, dry-run `release.yml`, then tag. |

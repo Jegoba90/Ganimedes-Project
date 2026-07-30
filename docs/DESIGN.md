@@ -59,16 +59,17 @@ code steps are complete and on `main`.** Steps 1 and 2 are shipped; step 3
 (deny-list) plus its two companions (the `scan` command and the audit RFC 8785 +
 Ed25519 upgrade) are done; and step 4 (human-in-the-loop) is implemented too, the
 last v0 code milestone. What remains is step 5, releasing it, which is not code:
-it is verification the code cannot do for itself plus one decision. See
+it is verification the code cannot do for itself. See
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3, §5, §6, and §8 for the per-milestone task
 lists.
 
-**Progress: 4/4 v0 milestones code-complete; overall v0 release readiness ~73%.**
-The remaining ~27% is verification (CI confirmation on all three OSes, the
-user-driven manual smokes) and release logistics: the release pipeline itself
-landed 2026-07-30 (`.github/workflows/release.yml`), so what is left there is a
-license and the act of tagging. The full release gate, with the weighted breakdown
-behind that number, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
+**Progress: 4/4 v0 milestones code-complete; overall v0 release readiness ~98%.**
+The pipeline (`.github/workflows/release.yml`), the license (Apache-2.0), the
+three-OS CI confirmation and the manual smokes F1-F5 all landed 2026-07-30, so no
+decision is left open and every check, automated or human, has passed. The
+remaining ~2% is the act of tagging, which publishes the artifacts. The full
+release gate, with the weighted breakdown behind that number and the per-smoke
+evidence, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
 
 1. ✅ **Transparent passthrough.** The proxy only forwards. Proves we can sit in
    the middle without breaking MCP. *Milestone: the agent works exactly as
@@ -98,18 +99,26 @@ behind that number, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
    3.4). *Milestone: the 30-second demo.* See `ARCHITECTURE.md` §8/§9 and the
    decision-log entry below.
 
-5. ⬜ **Release v0.** No new features: the remaining work is proving what is
-   already built and deciding one thing. In order, because each step can
+5. ⬜ **Release v0.** No new features: with the license settled, the remaining
+   work is only proving what is already built. In order, because each step can
    invalidate the next:
-   1. **Confirm CI is green** on Linux, macOS and Windows for the head of `main`.
-   2. **Run the manual smokes** against a real MCP server. These are the only
+   1. ✅ **Confirm CI is green** on Linux, macOS and Windows. Done 2026-07-30 for
+      `275335a`. Note the scope: that is `ci.yml`, the everyday gate.
+      `release.yml` has still never executed, since it only runs on a tag or a
+      manual dispatch.
+   2. ✅ **Run the manual smokes** against a real MCP server. These are the only
       checks no automated test replaces, because they exercise a server we did
-      not write. A failure here is a code bug and sends this step back to the
-      milestone it belongs to.
-   3. **Choose a license.** The one item that is a decision rather than a
-      verification, and the hard blocker on making the repository public. Step 4
-      must not happen before it: a tag published under no license is a tag
-      published under no license, and deleting it does not undo the download.
+      not write. Done 2026-07-30 against
+      `@modelcontextprotocol/server-filesystem`: F1-F5 all pass, including the
+      three approval outcomes with a human at the page. Two non-blocking findings
+      came out of it, both recorded in `GO_NO_GO.md` §6.
+   3. ✅ **Choose a license.** Done 2026-07-30, ahead of the two checks above
+      because it was the only item here that was a decision rather than a
+      verification, and a tag published under no license is not undone by deleting
+      it. **Apache-2.0** (`LICENSE`, copyright 2026 Jegoba90): the explicit patent
+      grant and trademark clause are worth the extra text for something adopters
+      embed in their own toolchain, and the zero-dependency rule means no other
+      license has to be reconciled with it. See the decision log below.
    4. **Push the tag.** `.github/workflows/release.yml` (2026-07-30) then re-runs
       the tests at that commit, cross-compiles six targets with the version
       stamped in, and publishes the binaries with `SHA256SUMS` (Art. 5.2). The
@@ -330,3 +339,35 @@ cheapest piece (audit) second; release only what has been checked, last.
   `--approval-addr`/`--approval-timeout` flags in `internal/cli`). Full gate green
   including `golangci-lint` and `govulncheck`; the manual smoke (§8 task list)
   runs in the user's environment.
+
+### License: Apache-2.0 (decided 2026-07-30)
+
+- **Decision:** the project ships under the **Apache License 2.0**, `LICENSE` at
+  the repository root (verbatim upstream text, copyright 2026 Jegoba90). This was
+  blocking item 3 of [`GO_NO_GO.md`](GO_NO_GO.md) and the last open decision on the
+  path to a public v0.
+- **Why not MIT** (what the closest competitor, Airlock, uses): MIT grants the same
+  freedoms in a fifth of the words, but it says nothing about patents and nothing
+  about trademarks. Ganimedes asks to be installed *between* an agent and its
+  tools, inside someone else's toolchain, which is a decision their legal team
+  reviews. Apache-2.0's explicit patent grant (§3) removes the ambiguity MIT leaves,
+  and §6 makes clear the license conveys no rights to the project's name or marks.
+  For a governance tool, those two clauses are worth the extra length.
+- **Why not AGPL-3.0 plus a commercial exception** (what MakerChecker uses): AGPL's
+  distinguishing power is §13, which triggers when software is *offered as a network
+  service*. Ganimedes is a local binary that talks to a subprocess over stdio; it is
+  not hosted, so that clause would rarely fire. The cost, however, is immediate and
+  real: many companies ban AGPL outright by policy, which would exclude precisely the
+  organizations that need agent governance. It buys protection this product's shape
+  does not need, at a price it cannot afford. If a hosted tier ever exists
+  (`INFRA.md` §2B), it can be licensed separately; Apache-2.0 on the local gateway
+  does not block that.
+- **What made this easy:** the zero-dependency rule (Art. 1.1). With no third-party
+  code in the tree, there is no compatibility matrix to reconcile and no inherited
+  attribution obligation. The three SVGs in `assets/` are original work by the same
+  author, so one license covers the whole repository.
+- **Not done, deliberately:** no per-file SPDX or copyright headers. Apache-2.0 does
+  not require them, and they would push the teaching comments that open each file
+  further down. Revisit only if a distributor asks. No `NOTICE` file either: it
+  exists to force attribution to propagate into derivative works (§4(d)), an
+  obligation not worth imposing at v0.
