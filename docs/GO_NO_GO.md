@@ -6,17 +6,16 @@
 > (Constitution Art. 2.4, 6.3): a criterion is GO only when it is enforced and
 > checked, never because it is expected to pass.
 
-**Current verdict (2026-07-30): NO-GO.** All four v0 milestones are code-complete
-and pushed to `main` (M4: `a096fb8` + `128423f`), the release pipeline exists
-(`.github/workflows/release.yml`), the license is settled (Apache-2.0), CI is
-confirmed green on all three OSes for `275335a`, and **the manual smokes F1-F5 now
-pass against a real MCP server** (2026-07-30, §4). Every substantive verification is
-done. What still blocks GO is mechanical and ordered: commit the pending license
-change, re-confirm CI on that commit, exercise `release.yml` through
-`workflow_dispatch` (nothing has ever run it), then tag. See "Blocking items" at the
-bottom.
+**Current verdict (2026-07-30): GO.** All four v0 milestones are code-complete and
+pushed to `main`, the license is settled (Apache-2.0), the manual smokes F1-F5 pass
+against a real MCP server (§4), CI is green on all three OSes for `1bd3ce7` (the
+head of `main`, CI #15), and `release.yml` has now been rehearsed on that same
+commit through `workflow_dispatch` (Release #2). Nothing is left to verify. The
+remaining act is pushing the tag, which is what publishes the artifacts; the two
+tag-gated steps it triggers, the release notes and `gh release create`, are the only
+part of the pipeline no dry run can exercise.
 
-## Progress toward GO: ~98%
+## Progress toward GO: ~99%
 
 Weighted by remaining effort to a v0 public release. The engineering is done and
 merged, so is every decision, and so is every verification; what remains is
@@ -26,13 +25,13 @@ publishing the artifacts.
 |-----------|:------:|:--------:|:------------:|
 | v0 engineering (M1-M4 code-complete, on `main`) | 55% | ✅ 100% | 55.0 |
 | Documentation (spec, architecture, go/no-go, behavior sync) | 10% | ✅ 100% | 10.0 |
-| CI green on Linux/macOS/Windows | 10% | ✅ 100% (green on `275335a`, 2026-07-30) | 10.0 |
+| CI green on Linux/macOS/Windows | 10% | ✅ 100% (green on `1bd3ce7`, 2026-07-30) | 10.0 |
 | Manual smokes F1-F5 (user-driven) | 15% | ✅ 100% (all five pass, 2026-07-30) | 15.0 |
 | License chosen | 5% | ✅ 100% (Apache-2.0, 2026-07-30) | 5.0 |
-| Verifiable release artifacts | 5% | ⏳ ~60% (pipeline written, its build logic reproduced and checked locally, never yet executed on GitHub) | 3.0 |
-| **Total** | **100%** | | **~98%** |
+| Verifiable release artifacts | 5% | ⏳ ~80% (pipeline rehearsed green on GitHub via `workflow_dispatch`, 2026-07-30; only the two tag-gated publish steps remain unexercised) | 4.0 |
+| **Total** | **100%** | | **~99%** |
 
-Progress bar: `███████████████████░` 98% (each block is 5%, so the bar rounds
+Progress bar: `███████████████████░` 99% (each block is 5%, so the bar rounds
 down; it never shows more progress than the table supports).
 
 ## 1. Verdict summary
@@ -40,14 +39,14 @@ down; it never shows more progress than the table supports).
 | Area | Criterion | Status |
 |------|-----------|--------|
 | Build order | M1 passthrough, M2 audit, M3 deny+scan+seal, M4 approval all code-complete | ✅ code-complete |
-| CI gate | build, vet, gofmt, golangci-lint, go test (-race on Linux), govulncheck, Gitleaks, CodeQL green on Linux/macOS/Windows | ✅ green on `275335a` (2026-07-30) |
+| CI gate | build, vet, gofmt, golangci-lint, go test (-race on Linux), govulncheck, Gitleaks, CodeQL green on Linux/macOS/Windows | ✅ green on `1bd3ce7` (CI #15, 2026-07-30) |
 | Coverage ratchet | no package coverage decreases (Art. 4.2) | ✅ held/improved locally |
 | Zero-dependency | standard library only, single static binary (Art. 1.1, 5.1) | ✅ verified |
 | Docs-code sync | DESIGN / ARCHITECTURE / SEQUENCES / README describe actual behavior (Art. 6.2) | ✅ synced for M4 |
 | Manual smokes | passthrough, audit+verify, deny, scan, approval (approve/reject/timeout) confirmed against a real MCP server | ✅ all five pass (2026-07-30) |
 | Security posture | fail-closed, local-first, stdout-sacred, tamper-evident audit, loopback-only approval (Art. 2.x, 3.x) | ✅ by construction and smoke-confirmed |
 | Non-goals | out-of-scope items explicitly listed and not shipped (README, USE_CASES) | ✅ documented |
-| Release artifacts | six cross-compiled binaries + `SHA256SUMS` published for the tag (Art. 5.2) | ⏳ pipeline ready, nothing cut yet |
+| Release artifacts | six cross-compiled binaries + `SHA256SUMS` published for the tag (Art. 5.2) | ⏳ pipeline rehearsed green, nothing cut yet |
 | License | a license chosen before the repo goes public | ✅ Apache-2.0, `LICENSE` at the root |
 
 Legend: ✅ GO, ⏳ in progress / not yet verified, ⛔ NO-GO blocker.
@@ -65,13 +64,13 @@ with any competitor or a hosted tier; those are explicitly out of v0 (README,
 - **G1 - Full CI green on all three OSes.** `go build`, `go vet`, `gofmt`,
   `golangci-lint` (no suppressions), `go test` (with `-race` where the runner has
   cgo, i.e. Linux), `govulncheck`, Gitleaks, CodeQL. No `[skip ci]`, no bypass
-  (Art. 4.3). *Status: ✅ satisfied. The run for `275335a` (head of `main`, which
-  includes the release pipeline and the two link-stamped vars) was confirmed green
-  on all three OSes on 2026-07-30. Note what this does and does not cover: it is
-  `ci.yml`, the everyday gate. `release.yml` runs only on a tag or a manual
-  dispatch, so the release pipeline itself is still unexercised. Any commit landing
-  after `275335a`, including the pending license commit, must be green in its own
-  right before a tag is pushed.*
+  (Art. 4.3). *Status: ✅ satisfied. CI #15 was confirmed green on all three OSes
+  for `1bd3ce7` on 2026-07-30, the head of `main` and the commit to be tagged. The
+  scope note that used to sit here is now spent: `release.yml` was rehearsed
+  separately on that same commit (Release #2, `workflow_dispatch`), so the release
+  pipeline is no longer unexercised. The rule behind that note still stands, and
+  still applies to any commit landing after `1bd3ce7`: whatever gets tagged must be
+  green in its own right.*
 - **G2 - Coverage ratchet.** No package decreases vs. its prior baseline
   (Art. 4.2). *Status locally:* config 100%, policy 100%, approval 96.7% (new),
   audit 83.1% (=), cli 94.8% (up from 93.6), proxy 84.5% (up from 82.4), scan 86.8%
@@ -169,9 +168,8 @@ only if real users ask (README, `USE_CASES.md`).
 
 ## 8. Blocking items (what flips NO-GO to GO)
 
-1. ✅ **CI green on Linux/macOS/Windows** (G1). Confirmed green on `275335a`,
-   2026-07-30. Re-confirm for whatever commit is tagged, since the license commit
-   is still pending.
+1. ✅ **CI green on Linux/macOS/Windows** (G1). Confirmed green on `1bd3ce7`,
+   the head of `main` and the commit to be tagged (CI #15, 2026-07-30).
 2. ✅ **Run the manual smokes F1-F5** against a real MCP server and record the
    result. Done 2026-07-30: all five pass against
    `@modelcontextprotocol/server-filesystem`, including the three approval outcomes
@@ -184,18 +182,22 @@ only if real users ask (README, `USE_CASES.md`).
    network-copyleft trigger barely applies to a local binary, so it would cost
    enterprise adoption without buying protection. The zero-dependency rule (Art.
    1.1) means no third-party license has to be reconciled with it.
-4. **Cut verifiable release artifacts** (cross-compiled binaries + checksums,
-   Art. 5.2) once item 2 is done. The automation for this landed 2026-07-30
-   (`.github/workflows/release.yml`): pushing a `vX.Y.Z` tag re-runs the tests at
-   that commit, cross-compiles six targets with the tag stamped into the binary,
-   proves the stamp took by executing the linux/amd64 build, writes `SHA256SUMS`,
-   and publishes the GitHub Release. What remains is the act of tagging, which
-   must not happen before item 2. `workflow_dispatch` runs everything except
-   publishing, so the pipeline can be exercised beforehand, and should be: nothing
-   has ever executed it.
+4. ⏳ **Cut verifiable release artifacts** (cross-compiled binaries + checksums,
+   Art. 5.2). The automation landed 2026-07-30 (`.github/workflows/release.yml`):
+   pushing a `vX.Y.Z` tag re-runs the tests at that commit, cross-compiles six
+   targets with the tag stamped into the binary, proves the stamp took by executing
+   the linux/amd64 build, writes `SHA256SUMS`, and publishes the GitHub Release.
+   **Rehearsed 2026-07-30 with `workflow_dispatch` (Release #2, green).** The first
+   attempt failed and was worth every minute of it: the symbol guard reported a
+   symbol missing that was present, because `go tool nm | grep -qF` under
+   `pipefail` cannot succeed on a binary with more symbols than fit a pipe buffer.
+   That bug was invisible to local verification on Windows, which has no SIGPIPE,
+   and would have surfaced at tag time instead. Fixed in `f708cfb`. All that
+   remains is the act of tagging; the two tag-gated steps (release notes,
+   `gh release create`) are the only ones a dry run cannot reach.
 
-When items 1-4 are satisfied and Sections 3-5 read all ✅, this document is flipped
-to **GO** with a dated sign-off here.
+Items 1-3 are satisfied and Sections 3-5 read all ✅, so this document is **GO** as
+of the sign-off below. Item 4 is the release itself, not a precondition for it.
 
 ## 9. Sign-off
 
@@ -206,3 +208,4 @@ to **GO** with a dated sign-off here.
 | 2026-07-30 | NO-GO (~78%) | License decided: Apache-2.0, `LICENSE` at the root, copyright 2026 Jegoba90. Blocking item 3 closes, and with it the last item that was a decision rather than a check. Remaining: confirm CI green on the three OSes, run the manual smokes, then tag. |
 | 2026-07-30 | NO-GO (~83%) | G1 satisfied: CI confirmed green on all three OSes for `275335a` (the head of `main`, covering the release pipeline and the link-stamped vars). Blocking item 1 closes. The manual smokes F1-F5 are now the only substantive work left before a tag. |
 | 2026-07-30 | NO-GO (~98%) | Manual smokes F1-F5 all pass against a real MCP server, the approval ones with a human at the page. Blocking item 2 closes, and with it the last substantive verification: every remaining step is an act, not a question. Two findings recorded in §6, neither blocking (Windows does not enforce `0600`; `scan` misses `edit_file`). Remaining: commit the pending license change, re-confirm CI on it, dry-run `release.yml`, then tag. |
+| 2026-07-30 | **GO (~99%)** | `release.yml` rehearsed end to end on GitHub for the first time (Release #2, `workflow_dispatch`, green) on `1bd3ce7`, the commit CI #15 has green on all three OSes. The first rehearsal failed on the symbol guard, and the failure was a bug in the guard rather than in the stamping: `go tool nm` piped into `grep -q` under `pipefail` reports failure exactly when the symbol is found, and Windows has no SIGPIPE, so local verification could never have shown it (fixed in `f708cfb`). Blocking items 1-3 are closed and nothing is left to verify. Cleared to tag `v0.1.0`; the tag is the act, not a precondition for it. |

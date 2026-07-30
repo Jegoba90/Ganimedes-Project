@@ -63,13 +63,14 @@ it is verification the code cannot do for itself. See
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3, §5, §6, and §8 for the per-milestone task
 lists.
 
-**Progress: 4/4 v0 milestones code-complete; overall v0 release readiness ~98%.**
-The pipeline (`.github/workflows/release.yml`), the license (Apache-2.0), the
-three-OS CI confirmation and the manual smokes F1-F5 all landed 2026-07-30, so no
-decision is left open and every check, automated or human, has passed. The
-remaining ~2% is the act of tagging, which publishes the artifacts. The full
-release gate, with the weighted breakdown behind that number and the per-smoke
-evidence, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
+**Progress: 4/4 v0 milestones code-complete; overall v0 release readiness ~99%,
+and the gate reads GO.** The pipeline (`.github/workflows/release.yml`), the
+license (Apache-2.0), the three-OS CI confirmation, the manual smokes F1-F5 and a
+green dry run of the release pipeline itself all landed 2026-07-30, so no decision
+is left open and every check, automated or human, has passed. The remaining ~1% is
+the act of tagging, which publishes the artifacts. The full release gate, with the
+weighted breakdown behind that number and the per-smoke evidence, lives in
+[`GO_NO_GO.md`](GO_NO_GO.md).
 
 1. ✅ **Transparent passthrough.** The proxy only forwards. Proves we can sit in
    the middle without breaking MCP. *Milestone: the agent works exactly as
@@ -103,9 +104,9 @@ evidence, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
    work is only proving what is already built. In order, because each step can
    invalidate the next:
    1. ✅ **Confirm CI is green** on Linux, macOS and Windows. Done 2026-07-30 for
-      `275335a`. Note the scope: that is `ci.yml`, the everyday gate.
-      `release.yml` has still never executed, since it only runs on a tag or a
-      manual dispatch.
+      `1bd3ce7`, the head of `main` and the commit to be tagged. That is `ci.yml`,
+      the everyday gate; `release.yml` is a separate pipeline and was rehearsed on
+      its own (step 4).
    2. ✅ **Run the manual smokes** against a real MCP server. These are the only
       checks no automated test replaces, because they exercise a server we did
       not write. Done 2026-07-30 against
@@ -121,9 +122,13 @@ evidence, lives in [`GO_NO_GO.md`](GO_NO_GO.md).
       license has to be reconciled with it. See the decision log below.
    4. **Push the tag.** `.github/workflows/release.yml` (2026-07-30) then re-runs
       the tests at that commit, cross-compiles six targets with the version
-      stamped in, and publishes the binaries with `SHA256SUMS` (Art. 5.2). The
-      pipeline can be rehearsed before this with `workflow_dispatch`, which builds
-      and verifies but publishes nothing.
+      stamped in, and publishes the binaries with `SHA256SUMS` (Art. 5.2).
+      Rehearsed 2026-07-30 with `workflow_dispatch`, which builds and verifies but
+      publishes nothing. The rehearsal earned its keep on the first try: it failed
+      on the symbol guard, and the bug was in the guard rather than the stamping
+      (`go tool nm` piped into `grep -q` under `pipefail`, invisible on Windows,
+      which has no SIGPIPE). Fixed in `f708cfb`, green on the second run. This step
+      is now the only one left.
 
    The checklist those steps are graded against, with per-item evidence and the
    current verdict, is [`GO_NO_GO.md`](GO_NO_GO.md); it is the single source of
