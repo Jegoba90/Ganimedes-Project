@@ -46,6 +46,99 @@ controllable**, and it never claims a guarantee it does not enforce.
 
 Early. Work in progress. v0 does **one thing well** instead of ten things badly.
 
+## Quick start
+
+### Install
+
+Download the binary for your platform from the [latest
+release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest). It is a
+single static file with no runtime to install. Check it against the published
+checksums before running it:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+ganimedes version   # ganimedes v0.1.0
+```
+
+Windows has no `sha256sum`, so PowerShell does the same check:
+
+```powershell
+(Get-FileHash ganimedes_v0.1.0_windows_amd64.exe -Algorithm SHA256).Hash.ToLower()
+# compare with the matching line in SHA256SUMS
+```
+
+With a Go toolchain you can skip the download entirely:
+
+```sh
+go install github.com/Jegoba90/Ganimedes-Project/cmd/ganimedes@latest
+```
+
+### Wrap a server
+
+Ganimedes' own flags come first, then `--`, then the MCP server command to wrap.
+Everything after `--` belongs to the server:
+
+```sh
+ganimedes run -- npx -y @modelcontextprotocol/server-filesystem ./data
+```
+
+Point your MCP client at that command instead of the server's own. Nothing
+changes for the agent, because allowed calls are forwarded untouched. What
+changes is that every `tools/call` is now recorded in `ganimedes-audit.jsonl`.
+On first run the signing key is generated next to it:
+
+```
+run: generated a new signing key at "ganimedes-signing.key" (public key at "ganimedes-signing.pub")
+```
+
+### Prove what happened
+
+```sh
+ganimedes verify
+# audit log OK: 2 entries, chain intact and signatures valid (ganimedes-audit.jsonl)
+```
+
+Change one entry by hand and this fails, naming the entry and what broke. Anyone
+auditing you needs only the log and the public key, never the private one:
+
+```sh
+ganimedes verify --pubkey ganimedes-signing.pub ganimedes-audit.jsonl
+```
+
+### Block and approve
+
+What is worth blocking depends on the server. `scan` lists the tools it exposes
+and flags the risky ones. It reports only, and enforces nothing:
+
+```sh
+ganimedes scan -- npx -y @modelcontextprotocol/server-filesystem ./data
+#   FLAG  write_file   matched: write, create
+#   FLAG  edit_file    matched: edit
+#   4 of 14 tool(s) flagged for review.
+```
+
+Then write the rules. `deny` blocks outright, `approve` holds the call until a
+human decides:
+
+```json
+{
+  "deny": ["move_file"],
+  "approve": ["write_file", "edit_file"]
+}
+```
+
+```sh
+ganimedes run --config config.json -- npx -y @modelcontextprotocol/server-filesystem ./data
+```
+
+A denied call never reaches the server, and the agent gets the JSON-RPC error
+`-32000`. A call that needs approval pauses and appears at
+`http://127.0.0.1:8765` with its arguments, where you press Approve or Reject. If
+nobody answers within `--approval-timeout` (60 seconds by default) the call is
+refused: ambiguity always fails closed.
+
+`ganimedes help` lists every command and flag.
+
 ## v0 scope
 
 A lightweight **MCP gateway** you drop between an AI agent and its MCP tools.
