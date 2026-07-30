@@ -44,9 +44,10 @@ a mocking library.
 
 | Package | Coverage | Notes |
 |---|---|---|
-| `internal/audit` | 81.7% | append/verify, content-edit + deletion detection, chain resume, error responses, null args; RFC 8785 canonicalization (spec §3.2.3 vectors, ES6 numbers, key order) and Ed25519 signing (valid, forged-and-re-signed, wrong-key) + keypair generate/load round-trip |
-| `internal/proxy` | 82.4% | passthrough, tools/call correlation + audit append, and the M3 deny path (blocked call errored + audited, block without a log) via the in-process helper-process pattern |
-| `internal/cli` | 93.6% | dispatch + exit codes, `run` flag parsing (`--log`, `--config`, `--signing-key`, `--`, command precedence), `verify` intact/tampered/missing/`--pubkey` resolution, `scan` usage/config/nonexistent/happy-path, `init`/usage paths |
+| `internal/audit` | 83.1% | append/verify, content-edit + deletion detection, chain resume, error responses, null args; RFC 8785 canonicalization (spec §3.2.3 vectors, ES6 numbers, key order) and Ed25519 signing (valid, forged-and-re-signed, wrong-key) + keypair generate/load round-trip |
+| `internal/proxy` | 84.5% | passthrough, tools/call correlation + audit append, the M3 deny path (blocked call errored + audited, block without a log), and the M4 approval path (approved forwards, rejected/timeout block, nil approver fails closed) via the in-process helper-process pattern |
+| `internal/approval` | 96.7% | approve/reject/timeout outcomes, the loopback guard in `New`, handler error paths, and a live listener via `httptest`; the fake `Approver` in the proxy tests keeps them socket-free |
+| `internal/cli` | 94.8% | dispatch + exit codes, `run` flag parsing (`--log`, `--config`, `--signing-key`, `--approval-addr`, `--approval-timeout`, `--`, command precedence), `verify` intact/tampered/missing/`--pubkey` resolution, `scan` usage/config/nonexistent/happy-path, `init`/usage paths |
 | `internal/scan` | 86.8% | keyword matching + its no-self-overlap invariant, the `initialize`+`tools/list` handshake against an in-memory server (happy path, tools/list error, premature EOF), an end-to-end scan against a subprocess stand-in, and report rendering |
 | `internal/config` | 100% | JSON `Load`: full, deny-only, unknown-field rejection, malformed, trailing data, missing file |
 | `internal/policy` | 100% | `Decide` decision table: deny-list hits, default-allow, case-sensitivity, nil engine |
@@ -158,11 +159,19 @@ on the Windows runner and on this dev machine).
 
 ## 2. Where Postman *might* re-enter (forward note, not a decision)
 
-If milestone 4's approval page exposes JSON endpoints alongside its HTML form,
-that surface would be real HTTP and Postman becomes a legitimate manual
-smoke-check tool for it — the same paste-the-JSON-back workflow already used
-for CryptoCapi. This is **not decided** and shouldn't be assumed; revisit when
-M4's design doc is written.
+The open question was: if milestone 4's approval page exposed JSON endpoints
+alongside its HTML form, that surface would be real HTTP and Postman would become
+a legitimate manual smoke-check tool for it, the same paste-the-JSON-back workflow
+already used for CryptoCapi.
+
+**Answered 2026-07-30, now that M4 is built: no.** `internal/approval` serves
+exactly two routes, `GET /` and `POST /decision`, and the only content type it
+ever writes is `text/html`. The decision arrives as an HTML form submission
+(`application/x-www-form-urlencoded`), not JSON, so there is no JSON surface for
+Postman to exercise. The approval flow is smoke-checked by clicking the page,
+which is F5 in [`GO_NO_GO.md`](GO_NO_GO.md). Postman stays out. This would only
+reopen if a later version adds a machine-facing approval API (a webhook, a desktop
+client), which is not in v0.
 
 ## 3. Summary: what to build next, in order of leverage
 
@@ -175,5 +184,11 @@ M4's design doc is written.
    check into a repeatable, CI-covered test.
 4. **E2E against a real MCP server (L3).** Lowest leverage for now — stays
    manual, revisit only if a real regression shows up in this area.
-5. **Smoke-test split (L5)** and **M4's Postman question** — both deferred
-   until they're actually needed (suite gets slow; M4 design starts).
+5. **Smoke-test split (L5)**: still deferred until the suite is slow enough for
+   a fast first signal to matter. **M4's Postman question** is no longer on this
+   list: it was answered "no" on 2026-07-30 (§2).
+
+None of items 2-5 block the v0 release. They are leverage, not gates: the release
+gate is [`GO_NO_GO.md`](GO_NO_GO.md), and the plan for reaching it is step 5 of
+`DESIGN.md` §5. Item 2 (adversarial cases) is the one worth doing first once v0 is
+out, because it covers failure modes a security tool is judged on.
