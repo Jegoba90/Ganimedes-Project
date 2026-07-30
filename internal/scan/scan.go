@@ -110,7 +110,7 @@ var riskKeywords = []string{
 	// Code / command execution.
 	"exec", "eval", "shell", "spawn", "subprocess", "command",
 	// State mutation.
-	"write", "create", "insert", "update", "rename", "chmod", "chown",
+	"write", "create", "edit", "insert", "update", "rename", "chmod", "chown",
 	// Money movement.
 	"payment", "transfer", "charge", "purchase", "refund", "invoice", "billing", "withdraw",
 	// Network egress.

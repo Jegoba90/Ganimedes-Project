@@ -109,7 +109,8 @@ output, a file's presence or absence on disk, and the audit log.
   session succeeded, so a block does not poison the session.
 - **F4 - Scan.** ✅ Listed all 14 tools, flagged 3 (`write_file`,
   `create_directory`, `move_file`), took no enforcement action, and wrote neither an
-  audit log nor a signing key. It also surfaced one false negative, recorded in §6.
+  audit log nor a signing key. It also surfaced one false negative, `edit_file`
+  going unflagged, fixed before the tag by adding `edit` to the keyword list.
 - **F5 - Approval (M4).** ✅ All three outcomes, each with the call held and listed
   on the loopback page. **Approve** forwarded it, the server really wrote the file,
   the agent received the server's own result, audited `decision=approved`.
@@ -159,13 +160,6 @@ stay documented (Art. 2.5, 6.3).
   signing key therefore rests on the ACL of the directory holding it, not on the
   file mode. Windows is a shipped target, so this is said plainly rather than left
   implied (Art. 2.4).
-- **`scan` does not flag `edit_file`.** The keyword list has a state-mutation
-  category (`write`, `create`, `insert`, `update`, `rename`, ...) with no `edit` in
-  it, so a tool that rewrites a file's contents is reported `ok`. Found in the F4
-  smoke against the filesystem server. `scan` enforces nothing, so no protection is
-  weakened, but the list is documented as erring toward surfacing and this is a
-  genuine false negative. The fix is one keyword; whether it lands before or after
-  v0 is open.
 
 ## 7. Explicit non-goals for v0 (must stay out)
 

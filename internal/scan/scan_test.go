@@ -48,6 +48,23 @@ func TestRiskFlags(t *testing.T) {
 			tool: Tool{Name: "http_delete", Description: "sends a request"},
 			want: []string{"delete", "request", "http"},
 		},
+		{
+			// A tool that rewrites a file's contents is state mutation, and went
+			// unflagged until "edit" joined that category. Found by scanning a
+			// real filesystem server (docs/GO_NO_GO.md §4, F4).
+			name: "editing a file is state mutation",
+			tool: Tool{Name: "edit_file", Description: "makes line-based edits to a text file"},
+			want: []string{"edit"},
+		},
+		{
+			// Substring matching is crude on purpose, and "credit" contains
+			// "edit". The list errs toward surfacing, so this false positive is
+			// accepted rather than worked around; it costs one glance, and a
+			// tool moving money is worth the glance anyway.
+			name: "accepted false positive: edit inside credit",
+			tool: Tool{Name: "credit_card_charge", Description: "bills a customer"},
+			want: []string{"edit", "charge"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
