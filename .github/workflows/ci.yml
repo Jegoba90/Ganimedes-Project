@@ -133,20 +133,11 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:go"
-          # Code Scanning (the Security tab) needs GitHub Advanced Security,
-          # which is only free on public repos. This repo is private for now,
-          # so upload results as a plain artifact instead of the Security tab
-          # (same workaround CryptoCapi's quality-gate.yml uses). Revisit once
-          # the repo goes public.
-          upload: never
-          output: sarif-results
-
-      - name: 📦 Upload SARIF as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: codeql-go
-          path: sarif-results/
-          retention-days: 7
+          # Findings go to the repository's Security tab. That needs GitHub
+          # Advanced Security, which is free on public repos; while this one was
+          # private the results were written to a plain artifact instead, which
+          # nobody reads. The repo went public with v0.1.0, so the workaround is
+          # gone and the findings land where GitHub actually surfaces them.
 
   # --- CONTAINER SCANNING: N/A ---
   # Ganimedes ships as a binary, not a Docker image, so there is nothing to
