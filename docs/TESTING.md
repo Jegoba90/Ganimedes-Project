@@ -77,8 +77,13 @@ failed — all exercised manually, including the RFC 8785 + Ed25519 seal.
 under test — `go build` it into a temp dir in `TestMain`, then drive it via
 `exec.Command` with real pipes. Still stdlib-only.
 
-**Status:** ⬜ not written yet. Currently exists only as an ad hoc manual
-PowerShell session, not committed, not repeatable in CI.
+**Status:** ⬜ not written yet, and now run by hand twice. On 2026-07-31 the
+**published** `v0.1.0` binary was driven through exactly this shape: a throwaway
+Go MCP server as a real subprocess, the release binary wrapping it as another,
+with a deny-list. The denied call was blocked with `-32000` and, checked against
+what the fake server recorded, never reached it; the allowed one did; the log
+verified; a hand edit was caught. That is L2's whole point, and each time it has
+been done the harness has been thrown away afterwards. Committing it is the gap.
 
 ### L3 — E2E (a real MCP server, not our stand-in)
 
@@ -154,8 +159,45 @@ current size (seconds, not minutes) this is a nice-to-have, not urgent.
 Linux, and macOS, and Ganimedes ships as a binary for all three.
 
 **Status:** ✅ already wired — CI builds and runs the full test suite on all
-three OSes; the race detector runs on Linux/macOS only (needs cgo, unavailable
-on the Windows runner and on this dev machine).
+three OSes; the race detector runs on **Linux only**. It needs cgo, which the
+Windows runner has no compiler for and which produces a macOS test binary that
+hits the LC_UUID/dyld abort, so Linux is the one platform where a cgo test binary
+builds and runs cleanly. Data races are not OS-specific, so that single platform
+is enough to catch them, and the cgo-free run covers the other two functionally.
+
+### Release artifacts — verified after publishing, not assumed
+
+The layers above test the code. This one tests the thing a stranger actually
+downloads, which is not the same object: it was cross-compiled by a machine none
+of us watched, from a commit, and served from a page anyone could in principle
+replace. First run in full against `v0.1.0` on 2026-07-31, and it is the reason
+`v0.2.0` exists.
+
+| Check | What it proves | Tool |
+|---|---|---|
+| Download every asset anonymously | The published URLs work for someone with no token | `curl -sL -w '%{http_code}'` |
+| `sha256sum -c SHA256SUMS` | The bytes match what the release says it published | stdlib |
+| `go version -m <binary>` | The commit (`vcs.revision`), a clean tree (`vcs.modified=false`), `-trimpath`, `CGO_ENABLED=0`, and a `GOOS`/`GOARCH` matching the filename. Works on **every** target from any host | Go toolchain |
+| `file <binary>` | The real format matches the name: no ELF shipped as `.exe`, no arm64 labelled amd64 | `file` |
+| Grep for build paths | No `/home/runner`, no local username, i.e. `-trimpath` did its job | `grep -aF` |
+| Rebuild the tagged commit | The published bytes are what this source produces | clean clone + `GOTOOLCHAIN=<the version in the buildinfo>` |
+| `gh attestation verify` | The binary came out of this repository's workflow | `gh` |
+| Run the binary | The version stamp is real and the documented behavior is the shipped behavior | the binary itself |
+
+Two traps worth writing down, both of which produced a false green before being
+caught:
+
+- **`gh attestation verify` prints nothing and exits 0 outside a TTY.** Read the
+  exit code, not the screen, and confirm with a negative control: append one byte
+  to a binary and the same command must fail with HTTP 404, because no attestation
+  exists for that digest.
+- **A rebuild will not be byte-identical, and that is not a failure.** Go embeds a
+  build ID whose leading components hash the host toolchain, so a Linux runner and
+  a Windows workstation differ there by design. What must match is the build ID's
+  **last component, the content ID**, plus every other byte. For `v0.1.0` that came
+  to 40 differing bytes out of ~7 MB on five targets, and 72 on darwin/arm64, where
+  Go adds an ad-hoc code signature and the build ID lives in the page whose hash
+  the signature covers.
 
 ## 2. Where Postman *might* re-enter (forward note, not a decision)
 

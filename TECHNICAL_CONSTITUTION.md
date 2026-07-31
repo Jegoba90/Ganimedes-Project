@@ -1,6 +1,6 @@
 # 🏛️ Ganimedes Technical Constitution (CTG-2026)
 
-**Version:** 1.0.1 | **Stack:** Go (stdlib only) | **Focus:** Transparency, Fail-Closed Security & Verifiable Audit
+**Version:** 1.1.0 | **Stack:** Go (stdlib only) | **Focus:** Transparency, Fail-Closed Security & Verifiable Audit
 
 This document defines the immutable laws of the code. Every pull request must
 comply with these articles.
@@ -196,6 +196,16 @@ operational procedure live in sibling documents of mandatory consultation.
 - **Rule:** releases are cross-compiled for the supported platforms and ship with
   checksums, so a user of a *security* tool can verify what they downloaded. See
   INFRA.md.
+- **Rule** *(added in 1.1.0, on the release that first carried it):* a checksum
+  published beside the binary proves integrity and not origin, because whoever can
+  replace a release can replace both. Every published binary therefore also carries
+  a **build provenance attestation**, recorded outside the release, so a user can
+  establish where a binary came from without trusting the page that served it.
+- **Boundary, stated wherever the attestation is:** it proves origin, never safety.
+  No document may present it as evidence that the code is correct or benign (2.4).
+- **Why this is a law and not a nicety:** the product's claim is that an action is
+  worth trusting when it can be verified rather than asserted. A release that asks
+  for trust it has not earned contradicts the thing being sold.
 
 ### 5.3. The Open-Core Boundary
 

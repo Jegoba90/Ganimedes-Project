@@ -101,9 +101,11 @@ actually built; where it diverged from the original plan, the note says why.
 3. ✅ **`internal/cli`**: `run` wired to `runCommand`, which parses
    `ganimedes run -- <server-cmd> [args]` and calls
    `proxy.Run(cfg, os.Stdin, os.Stdout)`.
-4. ⏳ **Manual test** (user-driven): point an MCP client at Ganimedes wrapping a
-   real MCP server and confirm the agent behaves as if talking to the server
-   directly. Pending; runs in the user's environment.
+4. ✅ **Manual test** (user-driven), passed 2026-07-30: a Go MCP client over stdio
+   drove `@modelcontextprotocol/server-filesystem` twice, bare and wrapped, and the
+   responses were byte-identical. Re-run 2026-07-31 against the **published**
+   binary rather than a local build, with the same result. Evidence in
+   [`GO_NO_GO.md`](GO_NO_GO.md) §4 (F1).
 5. ✅ **Automated test**: `proxy_test.go` drives `Run` with an in-memory reader
    and the test binary re-executed as an echo "server" (the standard
    `TestHelperProcess` pattern), so CI needs no external MCP server. proxy
@@ -287,10 +289,10 @@ passthrough).
 
 ## 7. Milestone 3 task list
 
-Status: **deny-list core, `scan`, and the audit RFC 8785 + Ed25519 upgrade are
-all code-complete** (deny 2026-07-26; scan and the seal upgrade 2026-07-28). Only
-the user-driven manual smoke (item 5) remains before this milestone is fully done
-(see [`DESIGN.md`](DESIGN.md) §5, §7).
+Status: **done** (deny 2026-07-26; scan and the seal upgrade 2026-07-28; manual
+smoke passed 2026-07-30). All items below are closed; the evidence for item 5 is
+F3 and F4 in [`GO_NO_GO.md`](GO_NO_GO.md) §4 (see also [`DESIGN.md`](DESIGN.md)
+§5, §7).
 
 1. ✅ **`internal/config`**: JSON `Load`, `Deny` field, `DisallowUnknownFields`,
    trailing-data rejection. Tests cover full/deny-only/typo/malformed/trailing/
@@ -305,9 +307,13 @@ the user-driven manual smoke (item 5) remains before this milestone is fully don
 4. ✅ **`internal/cli`**: `run --config`, command/deny precedence, and — closing
    the milestone-2 gap flagged in [`TESTING.md`](TESTING.md) — full unit coverage
    of dispatch, flag parsing, exit codes, and `verify` (coverage ~94%).
-5. ⏳ **Manual smoke** (user-driven): wrap a real MCP server with a `--config`
-   deny-list, confirm a blocked tool returns the error to the agent while allowed
-   tools work, and `verify` shows the deny entry. Runs in the user's environment.
+5. ✅ **Manual smoke** (user-driven), passed 2026-07-30: with a `--config`
+   deny-list against a real MCP server, the blocked tool returned `-32000` to the
+   agent, the file it would have written was never created, allowed calls kept
+   working, the session survived the block, and `verify` showed the entry with
+   `decision=deny`. Re-run 2026-07-31 against the published binary, where the fake
+   server's own record confirmed the denied call never reached it. Evidence in
+   [`GO_NO_GO.md`](GO_NO_GO.md) §4 (F3, F4).
 6. ✅ **`internal/scan` + `ganimedes scan`**: spawns the wrapped server, runs the
    `initialize` + `tools/list` handshake, and flags each tool by risky keyword
    (reporting-only, stdlib-only, deterministic, no ML). Tests cover keyword
@@ -399,9 +405,9 @@ page URL is logged to **stderr** (stdout is the protocol channel, Art. 3.1).
 
 ## 9. Milestone 4 task list
 
-Status: **human-in-the-loop is code-complete** (2026-07-29). Only the user-driven
-manual smoke (item 6) remains before this milestone is fully done (see
-[`DESIGN.md`](DESIGN.md) §5, §7).
+Status: **done** (code complete 2026-07-29, manual smoke passed 2026-07-30). All
+six items below are closed; the per-outcome evidence for item 6 is recorded as F5
+in [`GO_NO_GO.md`](GO_NO_GO.md) §4 (see also [`DESIGN.md`](DESIGN.md) §5, §7).
 
 1. ✅ **`internal/config`**: `Approve []string` field, same JSON safety as `Deny`.
    Round-trip test extended to cover it (coverage 100%).
@@ -423,8 +429,10 @@ manual smoke (item 6) remains before this milestone is fully done (see
    wiring that stands up the page only when the approval-list is non-empty. Tests
    cover flag parsing, the non-loopback and address-in-use failures, and the
    happy-path wiring (coverage ~95%).
-6. ⏳ **Manual smoke** (user-driven): wrap a real MCP server with a `--config`
-   approval-list, trigger a flagged tools/call, open the page, and confirm
-   Approve forwards the call while Reject and a timeout return the error to the
-   agent; `verify` shows the `approved`/`rejected`/`timeout` entries. Runs in the
-   user's environment.
+6. ✅ **Manual smoke** (user-driven), passed 2026-07-30 against
+   `@modelcontextprotocol/server-filesystem` on Windows 11: a flagged `tools/call`
+   paused, the page was opened, and all three outcomes were exercised with a human
+   at the button. Approve forwarded the call and the file was really written;
+   Reject and a timeout each returned `-32000` to the agent and left no file. The
+   `approved`/`rejected`/`timeout` entries appear in the log and `verify` accepts
+   the chain. Evidence in [`GO_NO_GO.md`](GO_NO_GO.md) §4 (F5).

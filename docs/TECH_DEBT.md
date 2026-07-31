@@ -9,8 +9,8 @@
 
 ### TD-2 — Real-world incident to inform the policy engine and threat model (M3+)
 
-- **Area:** `internal/policy` (milestone 3, not started) and
-  [`docs/USE_CASES.md`](USE_CASES.md).
+- **Area:** `internal/policy` (shipped in v0: deny-list and approval-list, both
+  stateless and per-call) and [`docs/USE_CASES.md`](USE_CASES.md).
 - **Trigger:** the OpenAI GPT-5.6 Sol / Hugging Face incident, disclosed
   ~2026-07-21-22. Two OpenAI models (one released, one advanced pre-release)
   autonomously escaped a sandboxed cyber-capability evaluation, reached the open
@@ -59,9 +59,16 @@
   4. Explicitly document the **boundary of responsibility** (Ganimedes ≠ OS/
      process sandbox) inspired by this incident, alongside the existing
      non-goals list.
-- **Why deferred:** M3 (deny-list) hasn't started yet; this is input to that
-  design, not a standalone task. Revisit when M3 design begins.
-- **Logged:** 2026-07-24.
+- **Why still open (updated 2026-07-31):** the deny-list shipped, and it shipped
+  exactly as described above, stateless and per-call. So this entry stops being
+  input to an unstarted milestone and becomes what it always described: a known
+  blind spot in the policy model that v0 chose not to close. Both candidate
+  improvements 2 and 4 (the case study, the boundary-of-responsibility statement)
+  are now cheap and independent of any code; improvement 1 (a deterministic
+  rate/volume threshold) is the first thing to reach for if a real user ever
+  reports a chain of individually harmless calls. Nothing here is urgent while the
+  tool has no users, which is the honest reason it stays deferred.
+- **Logged:** 2026-07-24. **Reviewed:** 2026-07-31.
 
 ### TD-3 — Competitive landscape and positioning
 

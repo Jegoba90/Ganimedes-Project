@@ -238,11 +238,14 @@ redaction are explicitly out of v0. They come later, and only if real users ask
 - **Deterministic, no ML:** every decision is a readable, reproducible rule.
 - **Tested behavior:** every `SEQUENCES.md` behavior has a hermetic automated test;
   package coverage never decreases (Art. 4.1, 4.2).
-- **Verifiable releases:** cross-compiled binaries ship with checksums (Art. 5.2).
-  Six targets (linux/darwin/windows on amd64 and arm64), each with the version
-  linked into the binary so `ganimedes version` identifies exactly what you have,
-  and a `SHA256SUMS` over the binaries themselves. Built by
-  `.github/workflows/release.yml`; see `INFRA.md` §2.
+- **Verifiable releases:** cross-compiled binaries ship with checksums and a build
+  provenance attestation (Art. 5.2). Six targets (linux/darwin/windows on amd64 and
+  arm64), each with the version linked into the binary so `ganimedes version`
+  identifies exactly what you have, and a `SHA256SUMS` over the binaries themselves.
+  The checksums prove the download is intact; the attestation, held outside the
+  release and checked with `gh attestation verify`, proves which workflow and commit
+  produced it. Neither says anything about the code being correct (Art. 2.4). Built
+  by `.github/workflows/release.yml`; see `INFRA.md` §2.
 
 ## 10. Roadmap beyond v0
 

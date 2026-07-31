@@ -44,28 +44,77 @@ controllable**, and it never claims a guarantee it does not enforce.
 
 ## Status
 
-Early. Work in progress. v0 does **one thing well** instead of ten things badly.
+Early, and shipping. **`v0.2.0` is the current release**, published from a tagged
+commit with checksums and a build provenance attestation on every binary. v0 does
+**one thing well** instead of ten things badly, and everything it does is listed
+below alongside what it deliberately does not do.
+
+The published binaries are checked, not assumed: each one is verified against its
+checksum and its attestation, and the release before this one was rebuilt from its
+tagged commit to confirm it matched the source it claimed to come from. What that
+audit found was not a bad binary but four places where this tool described itself
+inaccurately, all fixed in `v0.2.0`.
 
 ## Quick start
 
 ### Install
 
-Download the binary for your platform from the [latest
+Download the binary for your platform, and `SHA256SUMS`, from the [latest
 release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest). It is a
-single static file with no runtime to install. Check it against the published
-checksums before running it:
+single static file with no runtime to install, but it arrives as an ordinary
+download: named after its platform, without the execute bit, and not on your
+PATH.
+
+On Linux and macOS:
 
 ```sh
-sha256sum -c SHA256SUMS --ignore-missing
+sha256sum -c SHA256SUMS --ignore-missing     # ganimedes_v0.2.0_linux_amd64: OK
+chmod +x ganimedes_v0.2.0_linux_amd64
+./ganimedes_v0.2.0_linux_amd64 version       # ganimedes v0.2.0
+```
+
+Substitute your platform for `linux_amd64`: `linux_arm64`, `darwin_amd64` or
+`darwin_arm64`. Without the `chmod` the shell answers `Permission denied`: a
+release asset arrives as a plain `rw-r--r--` file, execute bit and all being
+something only you can grant it.
+
+`--ignore-missing` is a GNU coreutils flag, and it is there because `SHA256SUMS`
+lists all six binaries while you downloaded one. Where it does not exist (BusyBox
+on Alpine, and macOS, which ships `shasum` instead), hash your file and compare
+the line yourself:
+
+```sh
+shasum -a 256 ganimedes_v0.2.0_darwin_arm64
+# compare with the matching line in SHA256SUMS
+```
+
+macOS also quarantines anything downloaded through a browser, and these binaries
+are not notarized, so clear that attribute before the first run:
+
+```sh
+xattr -d com.apple.quarantine ganimedes_v0.2.0_darwin_arm64
+```
+
+The rest of this README calls the command `ganimedes`. To get that name, install
+it onto your PATH, which sets the execute bit at the same time:
+
+```sh
+sudo install -m 755 ganimedes_v0.2.0_linux_amd64 /usr/local/bin/ganimedes
 ganimedes version   # ganimedes v0.2.0
 ```
 
-Windows has no `sha256sum`, so PowerShell does the same check:
+On Windows, PowerShell checks the hash (there is no `sha256sum`), and the file
+runs as downloaded, with no permission to set:
 
 ```powershell
 (Get-FileHash ganimedes_v0.2.0_windows_amd64.exe -Algorithm SHA256).Hash.ToLower()
 # compare with the matching line in SHA256SUMS
+.\ganimedes_v0.2.0_windows_amd64.exe version   # ganimedes v0.2.0
 ```
+
+Windows may warn that the publisher is unrecognized: these binaries are not
+code-signed, which is an open decision recorded in [INFRA.md](docs/INFRA.md) §3.
+The checksum and the attestation below are what you check instead.
 
 Those checksums sit on the same page as the binaries, so they prove the download
 is intact, not where it came from. From `v0.2.0` on, each binary also carries a
@@ -195,7 +244,7 @@ same four pillars, each earned by real adoption before it is built:
 | Audit signing  | RFC 8785 canonical JSON + Ed25519 signatures          | in use  |
 | Approval UI    | minimal HTML page served on localhost via `net/http`  | in use  |
 | Releases       | tag-triggered GitHub Actions, 6 targets + `SHA256SUMS` | in use  |
-| Provenance     | Sigstore build attestation, keyless, via GitHub Actions | from v0.2.0 |
+| Provenance     | Sigstore build attestation, keyless, via GitHub Actions | in use  |
 
 No frontend framework: the only UI is a small local approval page served
 directly by the Go binary. Everything else is a CLI/proxy with no screen.
