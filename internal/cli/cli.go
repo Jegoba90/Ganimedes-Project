@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -58,10 +59,13 @@ const (
 // the program name) and returns a process exit code (0 = success). Returning
 // an int instead of calling os.Exit here keeps this function easy to test.
 func Run(args []string) int {
-	// No subcommand: show help and succeed.
+	// No subcommand is a usage error, not a success: the documented contract is
+	// 0 success, 1 runtime failure, 2 usage error (docs/PRODUCT_SPEC.md §6.1),
+	// and a script that invokes `ganimedes` with nothing has done nothing. The
+	// help goes to stderr here for the same reason it does below.
 	if len(args) == 0 {
-		printUsage()
-		return 0
+		printUsage(os.Stderr)
+		return 2
 	}
 
 	// The first argument selects the subcommand. The rest (args[1:]) will be
@@ -71,14 +75,18 @@ func Run(args []string) int {
 		fmt.Println("ganimedes", version)
 		return 0
 
+	// Help that was asked for is output, so it goes to stdout and succeeds.
 	case "help", "-h", "--help":
-		printUsage()
+		printUsage(os.Stdout)
 		return 0
 
 	// `run` (milestone 1 passthrough + milestone 2 audit + milestone 3 deny),
 	// `scan` (the deny-list pre-flight helper), and `verify` (milestone 2) are
 	// built. `init` stays wired but unbuilt until its milestone (see
-	// docs/DESIGN.md).
+	// docs/DESIGN.md). It is deliberately absent from the help: advertising a
+	// command that answers "not implemented yet" costs a reader a round trip,
+	// while keeping it wired gives anyone who found it in the design docs a
+	// straight answer instead of "unknown command".
 	case "run":
 		return runCommand(args[1:])
 	case "scan":
@@ -88,9 +96,13 @@ func Run(args []string) int {
 	case "init":
 		return notImplemented("init")
 
+	// Usage printed because something went wrong is diagnostics, so it goes to
+	// stderr with the error it explains. Splitting them (error on stderr, help
+	// on stdout) would put half the message on the channel Art. 3.1 reserves
+	// for protocol bytes, where a wrapped client would have to read it.
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", args[0])
-		printUsage()
+		printUsage(os.Stderr)
 		return 2
 	}
 }
@@ -350,8 +362,14 @@ func verifyCommand(args []string) int {
 		fmt.Printf("audit log OK: %d entries, chain intact and signatures valid (%s)\n", res.Entries, path)
 		return 0
 	}
-	fmt.Fprintf(os.Stderr, "audit log TAMPERED: entry %d of %d: %s (%s)\n",
-		res.BadEntry, res.Entries, res.Reason, path)
+	// Only the failing entry is named. res.Entries is not the log's length: Verify
+	// stops at the first break, so it equals res.BadEntry on this path, and
+	// printing it as "entry 1 of 1" read as "this log holds one entry" when it
+	// held more. What a reader does need is that the rest went unchecked, so the
+	// absence of further findings is not a clean bill of health (Art. 2.4).
+	fmt.Fprintf(os.Stderr, "audit log TAMPERED: entry %d: %s (%s)\n",
+		res.BadEntry, res.Reason, path)
+	fmt.Fprintln(os.Stderr, "verification stopped at the first break; entries after it were not checked")
 	return 1
 }
 
@@ -396,9 +414,10 @@ func notImplemented(name string) int {
 	return 1
 }
 
-// printUsage writes a short help text to stdout.
-func printUsage() {
-	fmt.Print(`ganimedes - the control and security layer for autonomous AI agents
+// printUsage writes a short help text to w. The caller picks the stream: stdout
+// when the help was requested, stderr when it accompanies a usage error.
+func printUsage(w io.Writer) {
+	fmt.Fprint(w, `ganimedes - the control and security layer for autonomous AI agents
 
 Usage:
   ganimedes <command> [flags]
@@ -407,10 +426,13 @@ Commands:
   run       Wrap an MCP server: ganimedes run [--config <path>] [--log <path>] [--signing-key <path>] [--approval-addr <host:port>] [--approval-timeout <dur>] -- <server-cmd> [args]
   scan      List a server's tools and flag the risky ones: ganimedes scan [--config <path>] -- <server-cmd> [args]
   verify    Check the audit log's chain and signatures: ganimedes verify [--pubkey <path>] [log-path]
-  init      Scaffold a config file (not implemented yet)
   version   Print the version
   help      Show this help
 
-This is a v0 skeleton. See docs/DESIGN.md for the plan.
+Start with "ganimedes scan -- <server-cmd>" to see what a server exposes, then
+put the tools worth blocking in a config file and wrap the server with
+"ganimedes run --config <path> -- <server-cmd>".
+
+Documentation: https://github.com/Jegoba90/Ganimedes-Project
 `)
 }

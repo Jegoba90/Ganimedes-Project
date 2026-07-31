@@ -145,7 +145,6 @@ ganimedes run    [--config <path>] [--log <path>] [--signing-key <path>]
                  -- <server-command> [args...]
 ganimedes scan   [--config <path>] -- <server-command> [args...]
 ganimedes verify [--pubkey <path>] [log-path]
-ganimedes init      (scaffold a config; not implemented in v0)
 ganimedes version
 ganimedes help
 ```
@@ -153,7 +152,14 @@ ganimedes help
 - `--` separates Ganimedes' own flags from the wrapped command.
 - The wrapped command may come from `--config` or the `--` tail; the explicit
   command line wins.
-- Exit codes: `0` success, `1` runtime failure, `2` usage error.
+- Exit codes: `0` success, `1` runtime failure, `2` usage error. Invoking
+  `ganimedes` with no command is a usage error: it has done nothing, and a
+  script must be able to tell.
+- `ganimedes init` (scaffold a config) is wired but not implemented, so it is
+  not listed in `ganimedes help`. It answers "not implemented yet" and exits 1,
+  which is a better reply than "unknown command" for anyone who found it here.
+- Help that was asked for goes to stdout; help that accompanies a usage error
+  goes to stderr with the error, keeping stdout clear (Art. 3.1).
 
 ### 6.2 Configuration file (JSON)
 

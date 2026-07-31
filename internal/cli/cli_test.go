@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Jegoba90/Ganimedes-Project/internal/audit"
@@ -31,6 +33,45 @@ func quiet(t *testing.T) {
 	})
 }
 
+// capture swaps os.Stdout and os.Stderr for pipes, runs fn, and returns what
+// each stream received. Tests here do not run in parallel, so swapping the
+// globals is safe; whatever they held (including quiet's null device) is put
+// back afterwards.
+func capture(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outW, errW
+	fn()
+	os.Stdout, os.Stderr = oldOut, oldErr
+
+	// Close the writers before reading, or the copies below block waiting for
+	// bytes that will never come.
+	if err := outW.Close(); err != nil {
+		t.Fatalf("close stdout pipe: %v", err)
+	}
+	if err := errW.Close(); err != nil {
+		t.Fatalf("close stderr pipe: %v", err)
+	}
+	var outBuf, errBuf bytes.Buffer
+	if _, err := io.Copy(&outBuf, outR); err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if _, err := io.Copy(&errBuf, errR); err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	_ = outR.Close()
+	_ = errR.Close()
+	return outBuf.String(), errBuf.String()
+}
+
 // TestRun_TopLevel covers the subcommand dispatch and its exit codes.
 func TestRun_TopLevel(t *testing.T) {
 	quiet(t)
@@ -39,7 +80,7 @@ func TestRun_TopLevel(t *testing.T) {
 		args []string
 		want int
 	}{
-		{"no args shows help", nil, 0},
+		{"no args is a usage error", nil, 2},
 		{"version", []string{"version"}, 0},
 		{"version -v", []string{"-v"}, 0},
 		{"version --version", []string{"--version"}, 0},
@@ -55,6 +96,56 @@ func TestRun_TopLevel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRun_UsageStreams pins which stream the help text goes to. Requested help
+// is output and belongs on stdout; help that explains an error is diagnostics
+// and belongs on stderr, alongside the error, and away from the channel Art. 3.1
+// reserves for protocol bytes.
+func TestRun_UsageStreams(t *testing.T) {
+	t.Run("help goes to stdout", func(t *testing.T) {
+		var code int
+		out, errOut := capture(t, func() { code = Run([]string{"help"}) })
+		if code != 0 {
+			t.Errorf("Run(help) = %d, want 0", code)
+		}
+		if !strings.Contains(out, "Usage:") {
+			t.Errorf("stdout = %q, want the usage text", out)
+		}
+		if errOut != "" {
+			t.Errorf("stderr = %q, want nothing", errOut)
+		}
+	})
+
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"no args", nil},
+		{"unknown command", []string{"frobnicate"}},
+	} {
+		t.Run(c.name+" goes to stderr", func(t *testing.T) {
+			var code int
+			out, errOut := capture(t, func() { code = Run(c.args) })
+			if code != 2 {
+				t.Errorf("Run(%v) = %d, want 2", c.args, code)
+			}
+			if out != "" {
+				t.Errorf("stdout = %q, want nothing on the error path", out)
+			}
+			if !strings.Contains(errOut, "Usage:") {
+				t.Errorf("stderr = %q, want the usage text", errOut)
+			}
+		})
+	}
+
+	// A command that does not exist must say so, not just print the help.
+	t.Run("unknown command is named", func(t *testing.T) {
+		_, errOut := capture(t, func() { Run([]string{"frobnicate"}) })
+		if !strings.Contains(errOut, `unknown command "frobnicate"`) {
+			t.Errorf("stderr = %q, want it to name the command", errOut)
+		}
+	})
 }
 
 // TestRunCommand_Usage covers the run subcommand's flag-parsing error paths, all
@@ -309,6 +400,12 @@ func TestVerifyCommand(t *testing.T) {
 		if _, err := l.Append("read_file", json.RawMessage(`{"path":"a"}`), json.RawMessage(`{"ok":true}`), nil, audit.DecisionAllow); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
+		// A second entry so a failure at entry 1 cannot be confused with the log
+		// holding a single entry, which is what the old "entry 1 of 1" wording
+		// implied on exactly this shape of log.
+		if _, err := l.Append("write_file", json.RawMessage(`{"path":"b"}`), json.RawMessage(`{"ok":true}`), nil, audit.DecisionAllow); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
 		if err := l.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
@@ -337,6 +434,45 @@ func TestVerifyCommand(t *testing.T) {
 		}
 		if got := Run([]string{"verify", "--pubkey", pubPath, logPath}); got != 1 {
 			t.Errorf("verify tampered = %d, want 1", got)
+		}
+	})
+
+	t.Run("tamper report names the entry and admits what it skipped", func(t *testing.T) {
+		logPath, pubPath := makeLog(t)
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		// Break the FIRST of the two entries, so verify stops with entries left
+		// unread. This is the case the report used to describe as "entry 1 of 1".
+		edited := bytes.Replace(data, []byte(`"path":"a"`), []byte(`"path":"b"`), 1)
+		if bytes.Equal(edited, data) {
+			t.Fatal("tamper had no effect")
+		}
+		if err := os.WriteFile(logPath, edited, 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		var code int
+		out, errOut := capture(t, func() {
+			code = Run([]string{"verify", "--pubkey", pubPath, logPath})
+		})
+		if code != 1 {
+			t.Errorf("verify tampered = %d, want 1", code)
+		}
+		if out != "" {
+			t.Errorf("stdout = %q, want the finding on stderr only", out)
+		}
+		if !strings.Contains(errOut, "entry 1:") {
+			t.Errorf("stderr = %q, want it to name entry 1", errOut)
+		}
+		// The count of entries read is not the log's length, so it must not be
+		// reported as though it were.
+		if strings.Contains(errOut, "of 1") {
+			t.Errorf("stderr = %q, still reports a total that is not the log's length", errOut)
+		}
+		if !strings.Contains(errOut, "not checked") {
+			t.Errorf("stderr = %q, want it to say the remaining entries went unchecked", errOut)
 		}
 	})
 
