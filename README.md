@@ -57,14 +57,22 @@ checksums before running it:
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
-ganimedes version   # ganimedes v0.1.0
+ganimedes version   # ganimedes v0.2.0
 ```
 
 Windows has no `sha256sum`, so PowerShell does the same check:
 
 ```powershell
-(Get-FileHash ganimedes_v0.1.0_windows_amd64.exe -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash ganimedes_v0.2.0_windows_amd64.exe -Algorithm SHA256).Hash.ToLower()
 # compare with the matching line in SHA256SUMS
+```
+
+Those checksums sit on the same page as the binaries, so they prove the download
+is intact, not where it came from. From `v0.2.0` on, each binary also carries a
+build provenance attestation, which is checked against GitHub instead:
+
+```sh
+gh attestation verify ganimedes_v0.2.0_linux_amd64 --repo Jegoba90/Ganimedes-Project
 ```
 
 With a Go toolchain you can skip the download entirely:
@@ -187,7 +195,7 @@ same four pillars, each earned by real adoption before it is built:
 | Audit signing  | RFC 8785 canonical JSON + Ed25519 signatures          | in use  |
 | Approval UI    | minimal HTML page served on localhost via `net/http`  | in use  |
 | Releases       | tag-triggered GitHub Actions, 6 targets + `SHA256SUMS` | in use  |
-| Provenance     | Sigstore build attestation, keyless, via GitHub Actions | next release |
+| Provenance     | Sigstore build attestation, keyless, via GitHub Actions | from v0.2.0 |
 
 No frontend framework: the only UI is a small local approval page served
 directly by the Go binary. Everything else is a CLI/proxy with no screen.
@@ -205,7 +213,7 @@ rather than a public issue.
 one-person project can honestly promise about response times, and the limits
 that are already known and written down rather than waiting to be discovered.
 It also covers how to verify a download: every release carries checksums, and
-releases after `v0.1.0` carry a build provenance attestation, which proves the
+releases from `v0.2.0` on carry a build provenance attestation, which proves the
 binary came out of this repository's workflow without having to trust the page
 you downloaded it from.
 

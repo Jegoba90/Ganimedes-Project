@@ -104,7 +104,7 @@ archive, so what you check is byte for byte the file you run. That proves
 integrity: the download matches what was published.
 
 It does not prove origin, because the checksums sit on the same page as the
-binaries. Releases built after `v0.1.0` therefore also carry a **build provenance
+binaries. Releases from `v0.2.0` on therefore also carry a **build provenance
 attestation**, a signed statement recorded outside the release itself:
 
 ```sh
@@ -113,7 +113,10 @@ gh attestation verify ganimedes_<version>_<os>_<arch> --repo Jegoba90/Ganimedes-
 
 That confirms the file came out of this repository's release workflow, at a
 specific commit. It proves where the binary came from, not that the code is
-correct or benign. `v0.1.0` predates the attestation and has checksums only.
+correct or benign. `v0.1.0` predates the attestation and has checksums only,
+though its binaries are reproducible: rebuilding the tagged commit with the same
+Go version and flags gives back the published bytes, differing only in the Go
+build ID that records which machine did the building.
 
 If you would rather trust nothing that was built elsewhere, the project has no
 dependencies to audit beyond its own source, and a Go toolchain builds it

@@ -71,6 +71,18 @@ all landed the same day, ahead of the tag rather than after it. The gate that
 graded all of it, with the per-smoke evidence, is closed at 100% in
 [`GO_NO_GO.md`](GO_NO_GO.md); anything past v0 needs a new gate.
 
+**`v0.2.0` (2026-07-31)** followed from auditing the published binaries instead
+of the source. Every one of the six was checked against its checksum, its build
+metadata, and a rebuild from the tagged commit: they differ from a fresh build
+only in the Go build ID, and on darwin/arm64 in the one code-signature page hash
+that covers it, so the release is reproducible from source. The audit also found
+four places where the CLI stated something untrue (a tamper report naming a total
+it did not know, a help text still calling a shipped v0 a skeleton, an
+unimplemented command in that help, and success on an empty invocation), all
+fixed. The release itself gained Sigstore build provenance and the repository a
+security policy. The minor bump, not a patch, is because the exit code for an
+empty invocation changed.
+
 1. ✅ **Transparent passthrough.** The proxy only forwards. Proves we can sit in
    the middle without breaking MCP. *Milestone: the agent works exactly as
    before, but through Ganimedes.*
