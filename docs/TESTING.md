@@ -106,12 +106,46 @@ still isn't.
   server (e.g. a filesystem MCP server), run both directly and through
   Ganimedes, diff the two transcripts byte-for-byte.
 
-**Status:** ⬜ undecided which approach to invest in; recommend staying manual
-(matching the existing M1 precedent) unless a regression in this area actually
-happens — building a full reference MCP client is real effort for a one-person
-project with "no rush" as the stated goal ([[project_ganimedes_goal_seed_not_wealth]]
-equivalent: craftsmanship over velocity, but also not gold-plating a harness
-nobody asked for).
+**Status:** ⬜ still not automated, but no longer undecided. The semi-automated
+option was written and used twice, and it cost about 160 lines of stdlib Go, far
+less than the "real effort" this section assumed. The remaining objection is not
+the client, it is that nothing about this runs in CI: it needs `npx`, a network,
+and for the approval outcomes a human at a browser. What is written below is
+therefore a record of runs, not a suite.
+
+#### Run of 2026-07-31, against the published `v0.2.0` binary
+
+Everything here used `ganimedes_v0.2.0_windows_amd64.exe` downloaded from the
+release page by a third party's machine, checksum-matched and
+`gh attestation verify`-clean, wrapping the official
+`@modelcontextprotocol/server-filesystem` via `npx` on Windows 11. The agent was
+a throwaway Go client over stdio. It matters that the binary was the published
+one: every earlier smoke had used a local build, so nobody had confirmed that
+what people download behaves like what we compile.
+
+| Behavior | Evidence |
+|---|---|
+| `scan` against a real server | 14 tools discovered, 4 flagged: `write_file`, `edit_file`, `create_directory`, `move_file`. `edit_file` is there because of the one-word keyword fix; it used to slip through |
+| Deny blocks, and blocks *before* the server | `write_file` denied: agent got `-32000`, and the file **did not exist** on disk afterwards. Nothing to undo, because nothing was done |
+| Deny does not break the session | The next call, `create_directory`, succeeded and the directory really existed |
+| Passthrough is untouched | The allowed call's response reached the agent verbatim, server text included |
+| The chain holds | 2 entries, `chain intact and signatures valid`, exit 0 |
+| Tampering is caught | Changing `"decision":"deny"` to `"allo"`, four characters, produced `TAMPERED: entry 1` with the stored and recomputed hashes side by side, exit 1 |
+| Approval, approved | A human clicked Approve on the local page. The call went through and the file was really written, 30 bytes with the expected content. Logged as `approved`, **not** `allow` |
+| Approval, rejected | A human clicked Reject. The agent got `-32000` reading `a human rejected the call`, distinct from the deny-list wording; the file was absent from a directory created fresh for the run; the session continued normally. Logged as `rejected` |
+| Approval, timed out | ⬜ not re-run against this binary. Same code path as reject with a different trigger |
+
+The three decisions land in the log as three different words, `deny`, `approved`
+and `rejected`, which is the point of recording them at all: months later the
+file distinguishes a rule that fired from a person who said no.
+
+One behavior worth stating because it was mistaken for a fault: **the approval
+page lives exactly as long as the session**. It is served by `run`, so when the
+client disconnects the process exits and the port is released. Reloading the page
+afterwards fails, correctly. Nothing is left listening on a developer's machine.
+
+The harness has now been thrown away three times. That, not the difficulty, is
+the gap.
 
 ### L4 — Adversarial / security-property tests
 
