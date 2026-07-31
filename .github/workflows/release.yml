@@ -26,6 +26,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write # create the Release and upload its assets
+      id-token: write # Sigstore signs the attestation against this run's OIDC token
+      attestations: write # record the provenance statement against the repository
     env:
       # Ship exactly what CI tested: a fully static, cgo-free binary
       # (Constitution Art. 5.1). Cross-compiling is free for us precisely
@@ -151,6 +153,32 @@ jobs:
           sha256sum "${PREFIX}"_* > SHA256SUMS
           cat SHA256SUMS
 
+      # A checksum proves the download matches what was published, and nothing
+      # more: SHA256SUMS sits on the same page as the binaries, so whoever can
+      # replace one can replace both. The attestation breaks that circle. It is
+      # a signed statement, held in Sigstore's transparency log and GitHub's API
+      # rather than in the release, that these exact bytes came out of this
+      # workflow, at this commit, in this repository, so a user verifies the
+      # download without having to trust the page they got it from.
+      #
+      # Keyless: Sigstore issues a short-lived certificate against this run's
+      # OIDC token, so there is no signing key to hold, rotate or leak. That is
+      # why this lands now while binary signing stays deferred (`INFRA.md` §3).
+      #
+      # What it does not say: nothing about the code being correct or benign. It
+      # proves origin, not safety, and the docs must not blur the two (Art. 2.4).
+      #
+      # Runs on dry runs as well as tags, deliberately. The one lesson this
+      # pipeline has already taught is that a step gated on tags is a step
+      # nobody has ever run.
+      - name: 🧾 Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          # The six binaries, by the same prefix the rest of the workflow uses.
+          # SHA256SUMS is left out on purpose: it is a convenience file, and the
+          # attestation covers what a user actually executes.
+          subject-path: dist/${{ steps.version.outputs.prefix }}_*
+
       # Kept for dry runs and as a fallback copy of what a tag published.
       - name: 📦 Upload artifacts to the run
         uses: actions/upload-artifact@v4
@@ -181,6 +209,18 @@ jobs:
           The checksums cover the binaries as published; they are produced by the
           workflow that built them (\`.github/workflows/release.yml\`), from the
           commit this tag points at, with tests run at that same commit.
+
+          They also live on this page, next to the binaries, so on their own they
+          prove integrity and not origin. Every binary here therefore carries a
+          build provenance attestation, checked against GitHub rather than
+          against this page:
+
+          \`\`\`sh
+          gh attestation verify ganimedes_${VERSION}_linux_amd64 --repo ${GITHUB_REPOSITORY}
+          \`\`\`
+
+          That confirms the file was built by this workflow, from this commit, in
+          this repository. It says nothing about the code being free of bugs.
           EOF
           cat release-notes.md
 

@@ -187,12 +187,27 @@ same four pillars, each earned by real adoption before it is built:
 | Audit signing  | RFC 8785 canonical JSON + Ed25519 signatures          | in use  |
 | Approval UI    | minimal HTML page served on localhost via `net/http`  | in use  |
 | Releases       | tag-triggered GitHub Actions, 6 targets + `SHA256SUMS` | in use  |
+| Provenance     | Sigstore build attestation, keyless, via GitHub Actions | next release |
 
 No frontend framework: the only UI is a small local approval page served
 directly by the Go binary. Everything else is a CLI/proxy with no screen.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full technical design and build
 order.
+
+## Security
+
+Found a way past the gateway? Report it privately through the [security
+advisory form](https://github.com/Jegoba90/Ganimedes-Project/security/advisories/new)
+rather than a public issue.
+
+[SECURITY.md](SECURITY.md) says what counts as a vulnerability here, what a
+one-person project can honestly promise about response times, and the limits
+that are already known and written down rather than waiting to be discovered.
+It also covers how to verify a download: every release carries checksums, and
+releases after `v0.1.0` carry a build provenance attestation, which proves the
+binary came out of this repository's workflow without having to trust the page
+you downloaded it from.
 
 ## License
 
