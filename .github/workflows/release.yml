@@ -216,15 +216,29 @@ jobs:
 
           cat >> release-notes.md <<EOF
 
-          Every binary below is a single static file with no runtime to install.
-          Download the one for your platform, make it executable, and run it.
+          The files below are **executables, not packages**: no \`.deb\`, no
+          \`.rpm\`, no installer, nothing to uninstall. Each is a single static
+          file with no runtime to install. Download the one for your platform,
+          make it executable, and run it:
+
+          \`\`\`sh
+          chmod +x ganimedes_${VERSION}_linux_amd64      # Linux and macOS only
+          ./ganimedes_${VERSION}_linux_amd64 version     # ganimedes ${VERSION}
+          \`\`\`
+
+          Without the \`chmod\` you get \`Permission denied\`; a downloaded file
+          carries no execute bit. Windows needs neither step. The full install
+          notes, including the macOS quarantine prompt, are in the
+          [README](https://github.com/${GITHUB_REPOSITORY}#install).
 
           ### Verify your download
 
           \`\`\`sh
           sha256sum -c SHA256SUMS --ignore-missing
-          ganimedes version   # must print: ganimedes ${VERSION}
           \`\`\`
+
+          (macOS has \`shasum -a 256\` instead, and BusyBox has no
+          \`--ignore-missing\`; both cases are covered in the README.)
 
           The checksums cover the binaries as published; they are produced by the
           workflow that built them (\`.github/workflows/release.yml\`), from the

@@ -59,66 +59,88 @@ inaccurately, all fixed in `v0.2.0`.
 
 ### Install
 
-Download the binary for your platform, and `SHA256SUMS`, from the [latest
-release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest). It is a
-single static file with no runtime to install, but it arrives as an ordinary
-download: named after its platform, without the execute bit, and not on your
-PATH.
+A release publishes six files, one per platform, plus `SHA256SUMS`. They are
+**executables, not packages**: there is no `.deb`, no `.rpm`, no installer, and
+nothing to uninstall afterwards. If your package manager rejects one, it is
+because you handed a program to a tool that expects an archive.
 
-On Linux and macOS:
+Download the file for your platform, and `SHA256SUMS`, from the [latest
+release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest), then
+follow the lines for your system.
+
+#### Linux
 
 ```sh
-sha256sum -c SHA256SUMS --ignore-missing     # ganimedes_v0.2.0_linux_amd64: OK
+cd ~/Downloads
+sha256sum -c SHA256SUMS --ignore-missing   # ganimedes_v0.2.0_linux_amd64: OK
 chmod +x ganimedes_v0.2.0_linux_amd64
-./ganimedes_v0.2.0_linux_amd64 version       # ganimedes v0.2.0
+./ganimedes_v0.2.0_linux_amd64 version     # ganimedes v0.2.0
 ```
 
-Substitute your platform for `linux_amd64`: `linux_arm64`, `darwin_amd64` or
-`darwin_arm64`. Without the `chmod` the shell answers `Permission denied`: a
-release asset arrives as a plain `rw-r--r--` file, execute bit and all being
-something only you can grant it.
+Use `linux_arm64` instead if `uname -m` says `aarch64`. The `chmod` is not
+optional: the file arrives `rw-r--r--`, and without the execute bit the shell
+answers `Permission denied` and exits 126. If the name ends in `.deb`, your
+browser added that; rename it back, or `sha256sum` will not find its line and
+`dpkg` will reject a file that was never a package.
 
-`--ignore-missing` is a GNU coreutils flag, and it is there because `SHA256SUMS`
-lists all six binaries while you downloaded one. Where it does not exist (BusyBox
-on Alpine, and macOS, which ships `shasum` instead), hash your file and compare
-the line yourself:
+On Alpine and other BusyBox systems `--ignore-missing` does not exist. Use the
+macOS form below, which needs no flags.
+
+#### macOS
 
 ```sh
-shasum -a 256 ganimedes_v0.2.0_darwin_arm64
-# compare with the matching line in SHA256SUMS
+cd ~/Downloads
+shasum -a 256 ganimedes_v0.2.0_darwin_arm64   # compare with the line in SHA256SUMS
+chmod +x ganimedes_v0.2.0_darwin_arm64
+./ganimedes_v0.2.0_darwin_arm64 version       # ganimedes v0.2.0
 ```
 
-macOS also quarantines anything downloaded through a browser, and these binaries
-are not notarized, so clear that attribute before the first run:
+Apple Silicon is `darwin_arm64`; Intel Macs are `darwin_amd64`. macOS ships
+`shasum` rather than `sha256sum` and it has no `--ignore-missing`, which is why
+the hash is compared by eye here: `SHA256SUMS` lists all six binaries and you
+downloaded one.
+
+If macOS refuses to open it and says the developer cannot be verified, it
+quarantined the download, which browsers do and these unsigned binaries do not
+override. Clear it and run again:
 
 ```sh
 xattr -d com.apple.quarantine ganimedes_v0.2.0_darwin_arm64
 ```
 
-The rest of this README calls the command `ganimedes`. To get that name, install
-it onto your PATH, which sets the execute bit at the same time:
+#### Windows
+
+```powershell
+cd ~\Downloads
+(Get-FileHash ganimedes_v0.2.0_windows_amd64.exe -Algorithm SHA256).Hash.ToLower()
+# compare with the matching line in SHA256SUMS
+.\ganimedes_v0.2.0_windows_amd64.exe version   # ganimedes v0.2.0
+```
+
+There is no permission to grant and no quarantine to clear. SmartScreen may say
+the publisher is unrecognized, because these binaries are not code-signed, an
+open decision recorded in [INFRA.md](docs/INFRA.md) §3. The checksum above and
+the attestation below are what you check instead of a signature.
+
+#### Give it a shorter name (optional)
+
+Every other command in this README is written as `ganimedes`. To get that name,
+put the file on your PATH. On Linux and macOS one command does the move, the
+rename and the execute bit at once:
 
 ```sh
 sudo install -m 755 ganimedes_v0.2.0_linux_amd64 /usr/local/bin/ganimedes
 ganimedes version   # ganimedes v0.2.0
 ```
 
-On Windows, PowerShell checks the hash (there is no `sha256sum`), and the file
-runs as downloaded, with no permission to set:
+On Windows, rename it to `ganimedes.exe` and move it into any folder already on
+your PATH.
 
-```powershell
-(Get-FileHash ganimedes_v0.2.0_windows_amd64.exe -Algorithm SHA256).Hash.ToLower()
-# compare with the matching line in SHA256SUMS
-.\ganimedes_v0.2.0_windows_amd64.exe version   # ganimedes v0.2.0
-```
+#### Where the file came from
 
-Windows may warn that the publisher is unrecognized: these binaries are not
-code-signed, which is an open decision recorded in [INFRA.md](docs/INFRA.md) §3.
-The checksum and the attestation below are what you check instead.
-
-Those checksums sit on the same page as the binaries, so they prove the download
-is intact, not where it came from. From `v0.2.0` on, each binary also carries a
-build provenance attestation, which is checked against GitHub instead:
+The checksums sit on the same page as the binaries, so they prove the download is
+intact, not where it came from. From `v0.2.0` on, each binary also carries a build
+provenance attestation, which is checked against GitHub instead:
 
 ```sh
 gh attestation verify ganimedes_v0.2.0_linux_amd64 --repo Jegoba90/Ganimedes-Project
