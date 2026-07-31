@@ -187,14 +187,34 @@ jobs:
           path: dist/
           retention-days: 14
 
+      # Not gated on tags: a dry run renders the notes too, and prints them, so
+      # the last step before publishing is not also the least rehearsed one.
+      # What changed in a release is written by hand, per version, in
+      # docs/release-notes/<tag>.md, and spliced in below. Hand-written and
+      # versioned alongside the code it describes: no changelog generator, which
+      # `INFRA.md` §3 rules out, and no notes that live only in a web form.
       - name: 📝 Release notes
-        if: github.ref_type == 'tag'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
           Ganimedes ${VERSION}: a local, zero-dependency security gateway for MCP servers.
+          EOF
+
+          notes="docs/release-notes/${VERSION}.md"
+          if [ -f "${notes}" ]; then
+            # Copied verbatim rather than expanded, so the notes can hold
+            # backticks and dollar signs without escaping them for this shell.
+            { echo; cat "${notes}"; } >> release-notes.md
+            echo "spliced in ${notes}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "::warning::no release notes at ${notes}; publishing the boilerplate only"
+          else
+            echo "dry run: no notes file for a dev version, as expected"
+          fi
+
+          cat >> release-notes.md <<EOF
 
           Every binary below is a single static file with no runtime to install.
           Download the one for your platform, make it executable, and run it.
