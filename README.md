@@ -42,6 +42,31 @@ isolate processes, patch vulnerabilities, or stop an attacker who already
 controls the machine. It makes what an agent does **accountable and
 controllable**, and it never claims a guarantee it does not enforce.
 
+## What you get
+
+One line per tool call, appended the moment the call happens. This is a real
+entry, an agent asking a filesystem server to write a file, wrapped here to fit
+the page (in the file each entry is a single line):
+
+```json
+{"seq":1,"ts":"2026-08-01T17:44:25.3256623Z","session":"77c7ea8316d25624",
+ "tool":"write_file","args":{"path":"./data/notes.md","content":"hello"},
+ "result":{"content":[{"type":"text","text":"ok"}],"isError":false},
+ "decision":"allow","prev_hash":"",
+ "hash":"2311d896bc2e70da382868563b56fc093858a8738d169dc54dfc226e44b72294",
+ "sig":"pRPMiMelSEiACClH2R97Tm1fNF3ygt5/dllkDHxusIdkE1scQtwRNyV3tJrlk/4sjm7KXl5d4E7lnEsXhc+JDg=="}
+```
+
+`tool`, `args` and `result` are what the agent did, kept verbatim as they
+crossed the wire. `decision` is what Ganimedes did about it: `allow`, `deny`,
+`approved`, `rejected`, or `timeout` when nobody answered in time. `prev_hash`
+and `hash` chain the entry to the one before it, and `sig` signs it, which is
+what makes an edit to past history detectable instead of merely discouraged.
+
+What it does not record: the agent's prompts or its reasoning, and anything that
+never crossed MCP. It logs actions on tools, not thoughts, and only for the
+server it wraps.
+
 ## Status
 
 Early, and shipping. **`v0.2.0` is the current release**, published from a tagged
@@ -161,13 +186,74 @@ Everything after `--` belongs to the server:
 ganimedes run -- npx -y @modelcontextprotocol/server-filesystem ./data
 ```
 
-Point your MCP client at that command instead of the server's own. Nothing
-changes for the agent, because allowed calls are forwarded untouched. What
-changes is that every `tools/call` is now recorded in `ganimedes-audit.jsonl`.
-On first run the signing key is generated next to it:
+Nothing changes for the agent, because allowed calls are forwarded untouched.
+What changes is that every `tools/call` is now recorded in
+`ganimedes-audit.jsonl`, in the directory you ran the command from. The signing
+key is generated there too on first run:
 
 ```
 run: generated a new signing key at "ganimedes-signing.key" (public key at "ganimedes-signing.pub")
+```
+
+#### Point your client at it
+
+Running that command by hand proves the wrapping works. In practice the gateway
+lives inside your MCP client's config, where the agent reaches it every session.
+Every client keeps a list of the servers it launches, each entry a `command` and
+its `args`: Claude Desktop's list is `claude_desktop_config.json`, Claude Code's
+is `.mcp.json`, others differ in filename but not in shape. Wrapping a server
+means moving the entry that is already there behind `ganimedes run --`. This:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./data"]
+    }
+  }
+}
+```
+
+becomes this:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "/usr/local/bin/ganimedes",
+      "args": [
+        "run",
+        "--log", "/home/you/ganimedes/audit.jsonl",
+        "--signing-key", "/home/you/ganimedes/signing.key",
+        "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "./data"
+      ]
+    }
+  }
+}
+```
+
+The server's own command and arguments are untouched; they only moved after
+`--`. Restart the client and the tools appear exactly as before, now with a log
+behind them.
+
+All three absolute paths are deliberate. A client is not a shell and may not
+pass on your `PATH`, so a bare `ganimedes` can fail to start, and what you see
+is the server disconnecting rather than a missing file; on Windows that value is
+the full path to `ganimedes.exe`, with the backslashes escaped for JSON
+(`"C:\\Tools\\ganimedes.exe"`). The log and the key default to the working
+directory, and that directory belongs to the client, not to you: a desktop app
+launched from the dock does not run where you would guess, and a log you cannot
+find is a log you do not have. `--signing-key` is separate from `--log` on
+purpose, so pinning only the log leaves the key behind in that same unknown
+directory. The folder you point them at has to exist already: `run` creates the
+files but not the directory holding them, and it fails the same quiet way a
+missing binary does.
+
+Because those paths are not the defaults, `verify` has to be told both of them:
+
+```sh
+ganimedes verify --pubkey /home/you/ganimedes/signing.pub /home/you/ganimedes/audit.jsonl
 ```
 
 ### Prove what happened
