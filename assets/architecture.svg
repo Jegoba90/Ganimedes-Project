@@ -53,11 +53,14 @@
   <path d="M308,237 L332,237 L332,249 Q332,260 320,265 Q308,260 308,249 Z" fill="#e7b64d" stroke="#c2912f" stroke-width="1.2"/>
   <path d="M315,249 L318.5,254 L326,244" fill="none" stroke="#5a3d0a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <!-- Shield 2 (gateway / server boundary) -->
+  <!-- Watch mark (gateway / server boundary). Deliberately NOT a second shield:
+       on this side the gateway records what comes back and does not judge it, and
+       server-initiated messages pass through unexamined. An eye claims what is
+       enforced here; a shield would claim what is not (Constitution Art. 2.4). -->
   <circle cx="740" cy="250" r="16" fill="#f7f8fa"/>
-  <path d="M728,237 L752,237 L752,249 Q752,260 740,265 Q728,260 728,249 Z" fill="#e7b64d" stroke="#c2912f" stroke-width="1.2"/>
-  <path d="M735,249 L738.5,254 L746,244" fill="none" stroke="#5a3d0a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M729,250 Q740,241 751,250 Q740,259 729,250 Z" fill="#ffffff" stroke="#8593a6" stroke-width="1.4"/>
+  <circle cx="740" cy="250" r="3.2" fill="#8593a6"/>
 
   <!-- caption -->
-  <text x="530" y="444" text-anchor="middle" font-size="12.5" fill="#8492a4">Every tools/call is inspected, then allowed, denied, or held for approval, and signed into the audit log.</text>
+  <text x="530" y="444" text-anchor="middle" font-size="12.5" fill="#8492a4">Every tools/call is inspected, then allowed, denied, or held for approval, and signed into a log that opens with the rules in force.</text>
 </svg>

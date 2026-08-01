@@ -27,7 +27,7 @@ approval on a local page, and every call is written to a tamper-evident log.
 
 <p align="center">
   <img src="assets/architecture.svg" width="820"
-       alt="Ganimedes sits inline as an MCP gateway between the agent and the real MCP server: every tools/call is inspected, then allowed, denied, or held for human approval, and signed into the audit log.">
+       alt="Ganimedes sits inline as an MCP gateway between the agent and the real MCP server. On the agent side every tools/call is inspected and then allowed, denied, or held for human approval. On the server side traffic is watched and recorded rather than policed. The log opens with the rules in force, and every call is signed into it.">
 </p>
 
 ## Governance for agents, not a sandbox
