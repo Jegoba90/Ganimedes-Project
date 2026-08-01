@@ -359,6 +359,40 @@ cheapest piece (audit) second; release only what has been checked, last.
   including `golangci-lint` and `govulncheck`; the manual smoke (§8 task list)
   runs in the user's environment.
 
+### Session header: the log states its own conditions (decided 2026-08-01)
+
+- **Decision:** every run writes a first entry of `kind: "session"` carrying the
+  gateway version, the wrapped command and its arguments, and the deny and
+  approval lists in force. It goes through the same canonicalization, the same
+  hash chain and the same signature as a tool call, so the conditions cannot be
+  restated later without breaking verification.
+- **What forced it:** the first run under a real MCP client
+  ([`TESTING.md`](TESTING.md) §L3, 2026-08-01) produced a log that read as
+  complete and could not answer the question the product is sold on. Nothing in
+  the file said which server was wrapped, which rules applied, or which build
+  wrote it. The sharpest form: `"decision":"allow"` is identical bytes whether a
+  policy examined the call and permitted it, or no policy was ever loaded. A log
+  of nothing but `allow` did not distinguish an attentive gatekeeper from an open
+  door, which is a hole in the PROOF pillar itself, not a missing feature.
+- **Empty lists are written, not omitted.** `"deny":[]` is the fact a reader
+  needs; an absent field would hide exactly what the header exists to state.
+- **Why now:** it changes the on-disk format, and the format is public. With no
+  users, changing it costs nothing; after adoption it costs compatibility with
+  every log anyone already holds. This decision was cheap on precisely one day.
+- **Backwards compatible, and tested as such.** A tool call carries no `kind` at
+  all, so its bytes are identical to what earlier versions wrote and their logs
+  still verify. `TestVerify_AcceptsALogWrittenBeforeSessionHeaders` freezes that
+  by verifying a hand-built v0.2.0-shaped entry, and the published v0.2.0 log
+  from the run above was re-verified with the new build.
+- **Verification got stricter with it.** `Verify` now rejects an entry whose kind
+  it does not know, or whose fields contradict the kind it claims. Reaching that
+  check means the seal already held, so the finding is not tampering: it is a
+  record this build cannot classify, and vouching for one would be the sort of
+  claim Art. 2.4 forbids.
+- **Not done:** recording the roots negotiation between client and server. It
+  closes a narrower gap at a higher price and would pull the gateway into
+  interpreting traffic it currently forwards blind. It stays open as TD-4.
+
 ### License: Apache-2.0 (decided 2026-07-30)
 
 - **Decision:** the project ships under the **Apache License 2.0**, `LICENSE` at

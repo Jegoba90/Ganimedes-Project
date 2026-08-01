@@ -227,6 +227,23 @@ func runCommand(args []string) int {
 	}
 	defer log.Close()
 
+	// The session header goes in before any traffic: it declares what this run
+	// wrapped and which rules are in force, so the log answers "under what rules"
+	// and not only "what happened". Failing here aborts the run, which does not
+	// contradict the documented fail-open stance on auditing: that rule weighs a
+	// lost record against taking a running agent down, and nothing is running
+	// yet. A log that cannot state its own conditions is not one to start.
+	if _, err := log.AppendSessionHeader(audit.SessionInfo{
+		Version: version,
+		Command: cfg.Command,
+		Args:    cfg.Args,
+		Deny:    cfg.Deny,
+		Approve: cfg.Approve,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "run: %v\n", err)
+		return 1
+	}
+
 	// Human-in-the-loop: when the config lists tools that require approval, stand
 	// up the local approval page and hand the proxy an approver. With no such
 	// tools there is nothing to approve, so the page is not started and the proxy

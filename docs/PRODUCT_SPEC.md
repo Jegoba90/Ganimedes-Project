@@ -90,6 +90,14 @@ Full detail in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - Every observed `tools/call` becomes one JSONL entry holding the full call (tool,
   arguments, result or error), plus `decision`, `seq`, timestamp, `session`,
   `prev_hash`, `hash`, and `sig`.
+- **Session header:** each run opens with one entry of `kind: "session"` whose
+  `session_info` states the gateway version, the wrapped command and its
+  arguments, and the deny and approval lists in force, so the log records the
+  conditions its calls were judged under and not only the calls themselves. Empty
+  lists are written as `[]` rather than omitted, because "no rules were loaded"
+  is the fact an absent field would hide. It is sealed and chained like any other
+  entry. A tool call carries no `kind`, which keeps its bytes identical to what
+  versions before this wrote.
 - **Hash chain:** `hash = SHA-256(RFC 8785 canonical JSON of the entry minus its
   seal)`. Each entry links to the previous via `prev_hash`. Any edit, reorder,
   insert, or delete of a past entry breaks the chain.
@@ -185,13 +193,19 @@ ganimedes help
 | `seq` | 1-based position in this file |
 | `ts` | RFC3339 nanosecond UTC timestamp |
 | `session` | groups entries from one proxy run |
-| `tool` | the `tools/call` name |
-| `args` | arguments, verbatim JSON from the wire |
-| `result` / `error` | present on success / failure (mutually exclusive) |
-| `decision` | `allow` \| `deny` \| `approved` \| `rejected` \| `timeout` |
+| `kind` | `session` on a header; **absent** on a tool call |
+| `session_info` | header only: `version`, `command`, `args`, `deny`, `approve` |
+| `tool` | call only: the `tools/call` name |
+| `args` | call only: arguments, verbatim JSON from the wire |
+| `result` / `error` | call only: present on success / failure (mutually exclusive) |
+| `decision` | call only: `allow` \| `deny` \| `approved` \| `rejected` \| `timeout` |
 | `prev_hash` | hash of the previous entry (chain link) |
 | `hash` | hex SHA-256 of the RFC 8785 canonical payload |
 | `sig` | base64 Ed25519 signature over the same bytes |
+
+`verify` rejects a log whose entry claims a `kind` it does not know, or whose
+fields contradict the kind it claims. That check runs after the seal, so it never
+reports tampering: it reports a record this build cannot classify.
 
 File permissions are `0600` (the log may contain secrets).
 

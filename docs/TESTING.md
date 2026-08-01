@@ -176,6 +176,11 @@ here it is in the file only because the agent happened to call
 `.mcp.json` that configures the gateway, so the supervised server could write to
 the file describing its own supervision.
 
+Pulling that thread found something wider than the run itself, and it is why
+this log format now opens each run with a session header: the file recorded what
+happened without recording the rules it happened under. That half is fixed
+(`DESIGN.md` §7); the scope renegotiation is what TD-4 still tracks.
+
 The harness was thrown away three times, and the fourth run needed none, because
 a real client is the harness. That the semi-automated client keeps being
 rewritten is still the gap for the runs that cannot use one.

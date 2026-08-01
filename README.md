@@ -53,24 +53,51 @@ was called inside.
 
 ## What you get
 
-One line per tool call, appended the moment the call happens. This is a real
-entry, an agent asking a filesystem server to write a file, wrapped here to fit
-the page (in the file each entry is a single line):
+One line per tool call, appended the moment the call happens, and one line at the
+start of every run stating what the gateway was and which rules it was holding.
+That second job is the whole product by default: configure nothing and Ganimedes
+blocks nothing and records everything, which makes it less a doorman than a
+notary. It does not tell you who may enter. It tells you who did.
+
+This is a real log, wrapped here to fit the page (in the file each entry is a
+single line). The header opens the run:
 
 ```json
-{"seq":1,"ts":"2026-08-01T17:44:25.3256623Z","session":"77c7ea8316d25624",
- "tool":"write_file","args":{"path":"./data/notes.md","content":"hello"},
- "result":{"content":[{"type":"text","text":"ok"}],"isError":false},
- "decision":"allow","prev_hash":"",
- "hash":"2311d896bc2e70da382868563b56fc093858a8738d169dc54dfc226e44b72294",
- "sig":"pRPMiMelSEiACClH2R97Tm1fNF3ygt5/dllkDHxusIdkE1scQtwRNyV3tJrlk/4sjm7KXl5d4E7lnEsXhc+JDg=="}
+{"seq":1,"ts":"2026-08-01T18:53:56.4647004Z","session":"2c5452f0f4879fe9",
+ "kind":"session",
+ "session_info":{"version":"0.3.0","command":"npx",
+   "args":["-y","@modelcontextprotocol/server-filesystem","./data"],
+   "deny":["move_file"],"approve":[]},
+ "prev_hash":"",
+ "hash":"c18a90360a0a0c9e8e5a16cf1298c0b4e9ec7e46f612d040befc622ebffe06a0",
+ "sig":"ynQmO2rFYJK1yXavMojSzs21A9JrkHkKatdCfRIqZXfSVmtl/dBVTVAblPbMuDBnmjlf7QrOKseQ945aOOwpCA=="}
+```
+
+Then the agent asks that server to write a file:
+
+```json
+{"seq":2,"ts":"2026-08-01T18:53:59.2127873Z","session":"2c5452f0f4879fe9",
+ "tool":"write_file","args":{"path":"notes.md","content":"hello"},
+ "result":{"content":[{"type":"text","text":"Successfully wrote to notes.md"}],
+   "structuredContent":{"content":"Successfully wrote to notes.md"}},
+ "decision":"allow",
+ "prev_hash":"c18a90360a0a0c9e8e5a16cf1298c0b4e9ec7e46f612d040befc622ebffe06a0",
+ "hash":"1a51e71f8fd5687b6f39a77ed17250b0497f874ff188708eb449ea8dae458065",
+ "sig":"r+jskKcwuFx+AfyGCZ022TFqA0YBX5wltFjH24CzNkTYRmwSMAVjuscwmQVQX1c5Le0LQ2yMHakEpkrxcI62DA=="}
 ```
 
 `tool`, `args` and `result` are what the agent did, kept verbatim as they
 crossed the wire. `decision` is what Ganimedes did about it: `allow`, `deny`,
 `approved`, `rejected`, or `timeout` when nobody answered in time. `prev_hash`
-and `hash` chain the entry to the one before it, and `sig` signs it, which is
+and `hash` chain each entry to the one before it, and `sig` signs it, which is
 what makes an edit to past history detectable instead of merely discouraged.
+
+The header sits in that same chain, and that is the point of it. Without it a
+`decision` of `allow` is identical bytes whether a policy examined the call and
+permitted it or no policy was ever loaded, and a log of nothing but `allow`
+cannot tell an attentive gatekeeper from an open door. An empty rule list is
+written as `[]` rather than left out, because "nothing was denied" is exactly the
+fact an absent field would hide.
 
 What it does not record: the agent's prompts or its reasoning, and anything that
 never crossed MCP. It logs actions on tools, not thoughts, and only for the

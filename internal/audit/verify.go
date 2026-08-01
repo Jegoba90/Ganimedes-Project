@@ -92,7 +92,17 @@ func Verify(path string, pub ed25519.PublicKey) (VerifyResult, error) {
 			return errStop
 		}
 
-		// 3. Chain check: does this entry link to the previous one?
+		// 3. Shape check: is this one of the record kinds this format defines,
+		// carrying the fields that kind requires? Reaching here means the seal
+		// held, so a failure is not tampering: it is a log written by a version
+		// whose records this build cannot judge. Refusing beats vouching for
+		// something we do not understand (Constitution Art. 2.4).
+		if err := e.payload.checkShape(); err != nil {
+			res.fail(pos, err.Error())
+			return errStop
+		}
+
+		// 4. Chain check: does this entry link to the previous one?
 		if e.PrevHash != prevHash {
 			reason := fmt.Sprintf("broken chain link (prev_hash %s, expected %s)", short(e.PrevHash), short(prevHash))
 			if pos == 1 {

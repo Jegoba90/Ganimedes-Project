@@ -172,16 +172,34 @@ around each append so it is correct as a standalone component.
 
 ### The hash chain (package `audit`)
 
-Each line is one `Entry`: a `payload` (seq, timestamp, session, tool, args,
-result/error, decision, `prev_hash`) plus the `hash` that seals it.
+Each line is one `Entry`: a `payload` plus the `hash` and `sig` that seal it. A
+payload is one of two kinds.
 
-- **`hash = SHA-256(json.Marshal(payload))`, hex-encoded.** `payload` is a
-  struct with no maps, so `json.Marshal` emits its fields in a fixed order and
-  the serialization is deterministic. `args`/`result`/`error` are kept as
-  `json.RawMessage`: the encoder compacts each one deterministically, so the
-  same input always yields the same bytes and therefore the same hash. This is
-  byte-canonicalization of the stored record, not semantic JSON
-  canonicalization — it seals exactly what was recorded.
+- **A tool call** (seq, timestamp, session, tool, args, result/error, decision,
+  `prev_hash`). It carries no `kind` field at all, which is what keeps its bytes
+  identical to those written before headers existed, so older logs still verify.
+- **A session header** (seq, timestamp, session, `kind: "session"`,
+  `session_info`, `prev_hash`), written once per run before any traffic.
+  `session_info` holds the gateway version, the wrapped command and its
+  arguments, and the deny and approval lists in force. It exists because a log of
+  calls alone cannot say what rules produced them: `decision: "allow"` is the
+  same bytes whether a policy examined the call and permitted it or none was ever
+  loaded. Empty lists are written as `[]`, so their emptiness is a recorded fact
+  rather than an absence. Being in the chain, the conditions it states cannot be
+  revised afterwards without breaking every hash that follows.
+
+`Verify` also checks that an entry is one of those two shapes and refuses a log
+it cannot classify. That check runs after the hash and the signature, so such a
+failure is never tampering: it is a record written by a version this build does
+not know, and vouching for it would breach Art. 2.4.
+
+- **`hash = SHA-256(RFC 8785 canonical JSON of the payload)`, hex-encoded**, with
+  an Ed25519 signature over the same bytes. Canonicalization sorts object members
+  by their UTF-16 code units, so the declaration order of the Go struct does not
+  affect the seal; writer and verifier agree because both go through the single
+  helper in `canonical.go`. `args`/`result`/`error` are kept as
+  `json.RawMessage`, so the exact JSON that crossed the wire stays in the file
+  and canonicalization applies only to the bytes being sealed.
 - **Why a separate `payload` struct embedded in `Entry`:** hashing an entry
   means "serialize it without its own hash". Embedding flattens `payload`'s
   fields into `Entry`, so `json.Marshal(entry.payload)` *is* the entry minus its

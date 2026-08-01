@@ -217,6 +217,67 @@ func TestRunCommand_ConfigProvidesCommand(t *testing.T) {
 	}
 }
 
+// TestRunCommand_WritesSessionHeader: before a single byte of traffic, run
+// records what it wrapped and the rules in force, so the log can answer "under
+// what rules" and not only "what happened". The wrapped binary does not exist,
+// so the run fails at proxy start (1) after the header is already on disk, which
+// is the point: the conditions are declared before anything can happen under
+// them.
+func TestRunCommand_WritesSessionHeader(t *testing.T) {
+	quiet(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ganimedes.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"deny":["move_file"]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	logPath := filepath.Join(dir, "audit.jsonl")
+	args := []string{
+		"run",
+		"--config", cfgPath,
+		"--log", logPath,
+		"--signing-key", filepath.Join(dir, "signing.key"),
+		"--", "definitely-not-a-real-binary-xyz", "--serve",
+	}
+	if got := Run(args); got != 1 {
+		t.Fatalf("Run = %d, want 1", got)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	first, _, _ := bytes.Cut(bytes.TrimSpace(data), []byte("\n"))
+
+	var e struct {
+		Kind string             `json:"kind"`
+		Info *audit.SessionInfo `json:"session_info"`
+	}
+	if err := json.Unmarshal(first, &e); err != nil {
+		t.Fatalf("decode header: %v (line %s)", err, first)
+	}
+	if e.Kind != audit.KindSession {
+		t.Fatalf("first entry kind = %q, want %q", e.Kind, audit.KindSession)
+	}
+	if e.Info == nil {
+		t.Fatal("header carries no session_info")
+	}
+	if e.Info.Version != version {
+		t.Errorf("version = %q, want %q", e.Info.Version, version)
+	}
+	if e.Info.Command != "definitely-not-a-real-binary-xyz" {
+		t.Errorf("command = %q, want the wrapped binary", e.Info.Command)
+	}
+	if len(e.Info.Args) != 1 || e.Info.Args[0] != "--serve" {
+		t.Errorf("args = %q, want the server's own arguments", e.Info.Args)
+	}
+	if len(e.Info.Deny) != 1 || e.Info.Deny[0] != "move_file" {
+		t.Errorf("deny = %q, want the config's list", e.Info.Deny)
+	}
+	if e.Info.Approve == nil || len(e.Info.Approve) != 0 {
+		t.Errorf("approve = %v, want an empty list rather than a missing one", e.Info.Approve)
+	}
+}
+
 // TestRunCommand_ApprovalWiring: a config with an approval-list stands up the
 // approval page (on an ephemeral loopback port) and hands the proxy an approver;
 // the run then fails only because the wrapped server binary does not exist (1),

@@ -89,24 +89,26 @@
   `list_allowed_directories` first, and the answer landed in entry 1. Without
   that call the log would look complete and say nothing about the boundary the
   server was working inside.
-- **The wider gap, which matters more:** the log records actions, not the
-  conditions they were judged under. Handed the file alone, a reader cannot tell
-  which server was wrapped, which deny and approval lists were in force, or which
-  version wrote it. The sharpest case is `"decision":"allow"`, which is the same
-  bytes whether the policy examined the call and permitted it or no policy was
-  loaded at all. A log full of `allow` does not distinguish an attentive
-  gatekeeper from an open door.
-- **Candidate fix (not decided, not implemented):** a session header as the
-  log's first entry, inside the same signed chain, carrying the version, the
-  wrapped command and its arguments, and the deny/approve lists actually in
-  force. That makes the file self-describing and retires the ambiguity of
-  `allow`. It changes the log format and touches `payload`, whose field order is
-  hash-significant. Timing argument: the format is public and the project has no
-  users, so this is the cheapest it will ever be to change.
+- **The wider gap, RESOLVED 2026-08-01, same day:** the log recorded actions but
+  not the conditions they were judged under, so a reader could not tell which
+  server was wrapped, which lists were in force, or which version wrote the file.
+  Closed by the session header (`DESIGN.md` §7, "Session header: the log states
+  its own conditions"): every run now opens with a signed, chained entry carrying
+  the version, the wrapped command and arguments, and the deny and approval lists
+  as they actually were, with empty lists written rather than omitted. `Verify`
+  also refuses an entry whose kind it cannot classify. Old logs are unaffected:
+  a tool call still carries no `kind`, so its bytes are what they always were.
+- **What is still open, and what this entry now tracks:** the narrow gap above.
+  The session header states the conditions *at launch*, and roots are negotiated
+  after it, so a scope that changes mid-session is still unrecorded. The header
+  narrows the blast radius (a reader can at least see the directory the server
+  was *given*) without closing it.
 - **Considered and not chosen:** auditing the roots messages themselves. It
-  closes the narrow gap only, costs more, and pulls the gateway into interpreting
-  protocol traffic it currently forwards blind.
-- **Logged:** 2026-08-01.
+  costs more than the header did, and it pulls the gateway into interpreting
+  protocol traffic it currently forwards blind, which is a different kind of
+  component from the one v0 set out to be. Reach for it if a real user is bitten
+  by a scope change, which is the honest trigger.
+- **Logged:** 2026-08-01. **Half-resolved:** 2026-08-01.
 
 ### TD-3 — Competitive landscape and positioning
 

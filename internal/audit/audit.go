@@ -66,6 +66,47 @@ const (
 // checks the first entry against it.
 const genesisHash = ""
 
+// Kind distinguishes the two things a log line can be. A tool call carries no
+// kind at all, which is deliberate: it keeps a call's bytes identical to what
+// every version before session headers wrote, so logs written by an older
+// Ganimedes still verify against this one.
+//
+// An unknown kind is not ignored. A verifier that cannot say what an entry
+// claims to be cannot vouch for it, so Verify refuses the whole log rather than
+// waving through a record it does not understand.
+const KindSession = "session"
+
+// SessionInfo is what a session header records: the conditions every call in
+// that session was judged under. Without it a log answers "what happened" but
+// not "under what rules", and a `decision` of allow is the same bytes whether a
+// policy examined the call and permitted it or no policy was ever loaded.
+//
+// Deny and Approve carry no omitempty on purpose. An empty list must appear as
+// [] rather than vanish, because "the deny-list was empty" is precisely the
+// fact a reader needs and the fact its absence would hide.
+type SessionInfo struct {
+	Version string   `json:"version"` // the gateway build that wrote this session
+	Command string   `json:"command"` // the wrapped MCP server's executable
+	Args    []string `json:"args"`    // arguments it was launched with
+	Deny    []string `json:"deny"`    // tools blocked outright, [] if none
+	Approve []string `json:"approve"` // tools held for a human, [] if none
+}
+
+// normalize replaces nil slices with empty ones so they serialize as [] and not
+// null. Both are distinguishable from an absent field, but [] is what a reader
+// expects for "this list was empty".
+func (s *SessionInfo) normalize() {
+	if s.Args == nil {
+		s.Args = []string{}
+	}
+	if s.Deny == nil {
+		s.Deny = []string{}
+	}
+	if s.Approve == nil {
+		s.Approve = []string{}
+	}
+}
+
 // payload is the part of an Entry that the hash covers: everything except the
 // hash itself. It is a separate (embedded) struct for one reason: hashing an
 // entry means "serialize it without its own hash and take SHA-256 of that".
@@ -73,25 +114,61 @@ const genesisHash = ""
 // object, so json.Marshal(entry.payload) is exactly the entry minus its hash,
 // with no field list duplicated between the two.
 //
-// Field order here is significant: json.Marshal emits struct fields in
-// declaration order, which is what makes the serialization deterministic and
-// therefore the hash reproducible. Do not reorder these fields without
-// understanding that it changes every hash computed afterwards.
+// Field order here does not affect the seal, despite how it looks: json.Marshal
+// emits fields in declaration order, but canonical() then runs the result
+// through RFC 8785, which sorts object members by their UTF-16 code units. Both
+// the writer and Verify canonicalize, so they agree whatever the order is here.
+// What does change every hash is renaming a field, changing whether it is
+// omitted when empty, or changing the value that reaches it.
 type payload struct {
-	Seq      uint64          `json:"seq"`              // 1-based position in this file
-	Time     string          `json:"ts"`               // RFC3339 nanosecond UTC timestamp
-	Session  string          `json:"session"`          // groups entries from one proxy run
-	Tool     string          `json:"tool"`             // the tools/call name
-	Args     json.RawMessage `json:"args"`             // arguments, verbatim JSON from the wire
-	Result   json.RawMessage `json:"result,omitempty"` // present on a successful call
-	Error    json.RawMessage `json:"error,omitempty"`  // present on a failed call
-	Decision string          `json:"decision"`         // one of the Decision* constants
-	PrevHash string          `json:"prev_hash"`        // hash of the previous entry (chain link)
+	Seq      uint64          `json:"seq"`                    // 1-based position in this file
+	Time     string          `json:"ts"`                     // RFC3339 nanosecond UTC timestamp
+	Session  string          `json:"session"`                // groups entries from one proxy run
+	Kind     string          `json:"kind,omitempty"`         // KindSession on a header; absent on a tool call
+	Info     *SessionInfo    `json:"session_info,omitempty"` // present only on a session header
+	Tool     string          `json:"tool,omitempty"`         // the tools/call name
+	Args     json.RawMessage `json:"args,omitempty"`         // arguments, verbatim JSON from the wire
+	Result   json.RawMessage `json:"result,omitempty"`       // present on a successful call
+	Error    json.RawMessage `json:"error,omitempty"`        // present on a failed call
+	Decision string          `json:"decision,omitempty"`     // one of the Decision* constants
+	PrevHash string          `json:"prev_hash"`              // hash of the previous entry (chain link)
 }
 
-// Entry is one audited tool call as stored on disk: a payload plus its seal, the
-// hex SHA-256 hash and the base64 Ed25519 signature. It is written as a single
-// JSON object per line (JSONL).
+// checkShape reports whether an entry is one of the two things this format
+// defines, with the fields that kind requires and none that contradict it. It
+// runs after the hash and signature check, so reaching it means the entry was
+// genuinely written by the holder of the signing key: a failure here says the
+// log came from a version this build cannot judge, not that someone edited it.
+func (p payload) checkShape() error {
+	switch p.Kind {
+	case KindSession:
+		if p.Info == nil {
+			return errors.New("session header without session_info")
+		}
+		if p.Tool != "" || len(p.Args) > 0 || len(p.Result) > 0 || len(p.Error) > 0 || p.Decision != "" {
+			return errors.New("session header carrying tool-call fields")
+		}
+	case "":
+		if p.Tool == "" {
+			return errors.New("tool call without a tool name")
+		}
+		if p.Decision == "" {
+			return errors.New("tool call without a decision")
+		}
+		if p.Info != nil {
+			return errors.New("tool call carrying session_info")
+		}
+	default:
+		return fmt.Errorf("unknown entry kind %q", p.Kind)
+	}
+	return nil
+}
+
+// Entry is one record as stored on disk, either an audited tool call or the
+// session header that opens a run: a payload plus its seal, the hex SHA-256 hash
+// and the base64 Ed25519 signature. It is written as a single JSON object per
+// line (JSONL). Both kinds sit in the same chain, so the header is as
+// tamper-evident as the calls it introduces.
 //
 // Args, Result, and Error are kept as json.RawMessage so the exact JSON that
 // crossed the wire is preserved rather than being decoded and re-encoded through
@@ -188,20 +265,41 @@ func Open(path, session string, priv ed25519.PrivateKey) (*Logger, error) {
 // failed write leaves the Logger's state unchanged and the next Append reuses
 // the same prev_hash.
 func (l *Logger) Append(tool string, args, result, rpcErr json.RawMessage, decision string) (Entry, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	p := payload{
-		Seq:      l.seq + 1,
-		Time:     time.Now().UTC().Format(time.RFC3339Nano),
-		Session:  l.session,
+	return l.appendPayload(payload{
 		Tool:     tool,
 		Args:     orNull(args),
 		Result:   result,
 		Error:    rpcErr,
 		Decision: decision,
-		PrevHash: l.prevHash,
-	}
+	})
+}
+
+// AppendSessionHeader records what this session is: the gateway's version, the
+// server it wrapped, and the deny and approval lists in force for every call
+// that follows. It belongs at the start of a session, before any traffic, and
+// there is one per run rather than one per file, because a log is appended to
+// across runs and each run has its own conditions to declare.
+//
+// It goes through the same seal and the same chain as a tool call, so it cannot
+// be swapped for a friendlier set of rules after the fact without breaking
+// verification.
+func (l *Logger) AppendSessionHeader(info SessionInfo) (Entry, error) {
+	info.normalize()
+	return l.appendPayload(payload{Kind: KindSession, Info: &info})
+}
+
+// appendPayload stamps p with the fields only the Logger can know (its position
+// in the chain, the time, the session label, the link to the previous entry),
+// seals it and writes the line. Callers supply what the record is; this supplies
+// where it sits.
+func (l *Logger) appendPayload(p payload) (Entry, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	p.Seq = l.seq + 1
+	p.Time = time.Now().UTC().Format(time.RFC3339Nano)
+	p.Session = l.session
+	p.PrevHash = l.prevHash
 
 	// Canonicalize once, then both seal it (hash for the chain) and sign it
 	// (Ed25519 for authenticity) over the exact same bytes.
@@ -251,13 +349,20 @@ func NewSession() string {
 	return hex.EncodeToString(b[:])
 }
 
-// orNull normalizes an empty RawMessage to nil so it marshals as JSON null.
-// A zero-length, non-nil RawMessage is invalid JSON and would make json.Marshal
-// fail; Args must always be present in the record, so this guarantees a valid
-// value (null) when a tool was called with no arguments.
+// orNull normalizes an empty RawMessage to the literal JSON null. A
+// zero-length, non-nil RawMessage is invalid JSON and would make json.Marshal
+// fail; Args must always be present in a recorded call, so this guarantees a
+// valid value (null) when a tool was called with no arguments.
+//
+// The literal matters now that Args is omitempty. Returning nil would let the
+// field vanish, and "called with no arguments" would become indistinguishable
+// from "arguments were not recorded" — the same reason SessionInfo keeps its
+// empty lists visible. Written this way the field is omitted only where it has
+// no meaning at all, on a session header, and a call's bytes stay identical to
+// what every earlier version wrote.
 func orNull(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
-		return nil
+		return json.RawMessage("null")
 	}
 	return raw
 }

@@ -354,5 +354,12 @@ func Render(w io.Writer, r Report, server string) {
 	}
 
 	fmt.Fprintf(w, "\n%d of %d tool(s) flagged for review.\n", r.Flagged(), len(r.Findings))
+	// The count invites the reader to treat the rest as cleared, which it is not.
+	// Naming what the keyword list covers also names what it leaves out, and the
+	// gap that matters most is reading: a tool that only pulls data out of a
+	// system matches nothing here, and can still be the one that costs you.
+	fmt.Fprintln(w, `An "ok" means no keyword matched, not that a tool is safe. The list covers`)
+	fmt.Fprintln(w, `destruction, execution, state change, money, network egress and secrets, so a`)
+	fmt.Fprintln(w, `tool that only reads your data matches none of it.`)
 	fmt.Fprintln(w, `scan reports only; nothing is blocked. Add the tools you want blocked to the "deny" list in your config, then run "ganimedes run --config ...".`)
 }

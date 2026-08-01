@@ -92,12 +92,12 @@ wrong:
   chain plus signature proves the log was not altered by someone without the key.
   It was never claimed to survive an attacker who has the key, and the docs say
   so rather than implying otherwise.
-- **The log does not say what it was watching.** Entries record tool calls and
-  nothing about the conditions they were judged under: the wrapped server, the
-  rules in force and the gateway's own version are all absent, so a file of
-  `allow` decisions cannot be told apart from a file written with no policy
-  loaded. A wrapped server can also renegotiate its own scope with the client
-  after launch, and that exchange is forwarded without being recorded. Both are
+- **A wrapped server's scope can change without the log saying so.** The session
+  header records the conditions at launch, including the command and arguments
+  the server was given, but a server may renegotiate its own scope with the
+  client afterwards (MCP Roots is the case that surfaced this). The gateway
+  forwards that exchange and records only tool calls, so the log can show a
+  directory the server was handed and not the one it ended up using. See
   `docs/TECH_DEBT.md` TD-4.
 - **Ganimedes is not a sandbox.** It governs what an agent does *through the MCP
   server it wraps*. An agent that can execute arbitrary code, reach the server
