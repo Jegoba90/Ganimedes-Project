@@ -144,8 +144,41 @@ page lives exactly as long as the session**. It is served by `run`, so when the
 client disconnects the process exits and the port is released. Reloading the page
 afterwards fails, correctly. Nothing is left listening on a developer's machine.
 
-The harness has now been thrown away three times. That, not the difficulty, is
-the gap.
+#### Run of 2026-08-01, under a real MCP client
+
+The first run driven by a real MCP client. Every run before it used a throwaway
+Go client, so the one scenario every user starts with had never been exercised.
+Setup: the published `v0.2.0` Windows binary, declared in a Claude Code project's
+`.mcp.json` exactly as the README documents, wrapping
+`@modelcontextprotocol/server-filesystem` through `npx`, with the log and signing
+key pinned to absolute paths outside the directory the server could reach.
+
+| Behavior | Evidence |
+|---|---|
+| The client sees an ordinary server | `/mcp` listed the wrapped server as `✓ Connected`, and the agent used it with no sign the gateway was in the path |
+| Connecting is not acting | After connecting and before any request, `audit.jsonl` existed and held zero entries: `initialize` and `tools/list` are not tool calls |
+| Keys land where they were pinned | `signing.key` and `signing.pub` appeared beside the log at the given paths, not in the client's working directory |
+| An agent's own choices are logged | One plain-language request produced 3 entries, `list_allowed_directories`, `write_file` and `read_text_file`, carrying the arguments the agent picked rather than any a human typed |
+| The chain holds under a real client | `verify --pubkey`: 3 entries, `chain intact and signatures valid`, exit 0 |
+
+**What it found.** The wrapped server was handed one directory on its command
+line and worked in the Claude Code project directory instead. That server asks
+the client for MCP Roots and prefers them over its own arguments; the throwaway
+client offers none, which is why every earlier run saw the argument respected.
+`scan` had been printing the server's own words for this all along and nobody
+read them: `Client does not support MCP Roots, using allowed directories set from
+server args`.
+
+Two consequences, both recorded as TD-4 in [TECH_DEBT.md](TECH_DEBT.md). A
+wrapped server's scope can change after launch and the log does not record it:
+here it is in the file only because the agent happened to call
+`list_allowed_directories` first. And the effective directory held the
+`.mcp.json` that configures the gateway, so the supervised server could write to
+the file describing its own supervision.
+
+The harness was thrown away three times, and the fourth run needed none, because
+a real client is the harness. That the semi-automated client keeps being
+rewritten is still the gap for the runs that cannot use one.
 
 ### L4 — Adversarial / security-property tests
 

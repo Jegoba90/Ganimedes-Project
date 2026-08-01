@@ -42,6 +42,15 @@ isolate processes, patch vulnerabilities, or stop an attacker who already
 controls the machine. It makes what an agent does **accountable and
 controllable**, and it never claims a guarantee it does not enforce.
 
+One boundary is worth naming, because testing found it the hard way: the gateway
+does not decide what a wrapped server may touch. A server can negotiate its own
+scope with the client after it starts, which is what
+`@modelcontextprotocol/server-filesystem` does whenever the client supports MCP
+Roots. It asks the client for them and prefers them over the directory on its own
+command line. Ganimedes forwards that exchange like everything else and records
+tool calls only, so the log tells you what was called and not the territory it
+was called inside.
+
 ## What you get
 
 One line per tool call, appended the moment the call happens. This is a real
@@ -235,7 +244,10 @@ becomes this:
 
 The server's own command and arguments are untouched; they only moved after
 `--`. Restart the client and the tools appear exactly as before, now with a log
-behind them.
+behind them. The directory in that line is the filesystem server's argument, not
+a limit the gateway imposes, and under a real client it may not be the one the
+server ends up working in: see [not a
+sandbox](#governance-for-agents-not-a-sandbox) above.
 
 All three absolute paths are deliberate. A client is not a shell and may not
 pass on your `PATH`, so a bare `ganimedes` can fail to start, and what you see

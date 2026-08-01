@@ -70,6 +70,44 @@
   tool has no users, which is the honest reason it stays deferred.
 - **Logged:** 2026-07-24. **Reviewed:** 2026-07-31.
 
+### TD-4 — The audit log does not record the conditions it judged under
+
+- **Area:** `internal/audit` (the `payload` struct and the JSONL format),
+  `internal/cli` (`run`), and every doc that presents the log as proof.
+- **Trigger:** the run of 2026-08-01 (`docs/TESTING.md` §L3), the first time
+  Ganimedes was driven by a real MCP client instead of a throwaway Go one. The
+  wrapped `@modelcontextprotocol/server-filesystem` was handed one directory on
+  its command line and operated on a different one entirely: the client supports
+  MCP Roots, that server asks the client for them and prefers them over its own
+  arguments, so the client's workspace replaced the argument without a word. The
+  gateway forwarded the exchange, as a transparent proxy must, and recorded none
+  of it.
+- **The narrow gap:** a wrapped server's effective scope can be negotiated with
+  the client after launch, and `tools/call` is the only thing audited, so nothing
+  about that negotiation reaches the log. In the run that found this, the real
+  scope is in the file only by luck: the agent chose to call
+  `list_allowed_directories` first, and the answer landed in entry 1. Without
+  that call the log would look complete and say nothing about the boundary the
+  server was working inside.
+- **The wider gap, which matters more:** the log records actions, not the
+  conditions they were judged under. Handed the file alone, a reader cannot tell
+  which server was wrapped, which deny and approval lists were in force, or which
+  version wrote it. The sharpest case is `"decision":"allow"`, which is the same
+  bytes whether the policy examined the call and permitted it or no policy was
+  loaded at all. A log full of `allow` does not distinguish an attentive
+  gatekeeper from an open door.
+- **Candidate fix (not decided, not implemented):** a session header as the
+  log's first entry, inside the same signed chain, carrying the version, the
+  wrapped command and its arguments, and the deny/approve lists actually in
+  force. That makes the file self-describing and retires the ambiguity of
+  `allow`. It changes the log format and touches `payload`, whose field order is
+  hash-significant. Timing argument: the format is public and the project has no
+  users, so this is the cheapest it will ever be to change.
+- **Considered and not chosen:** auditing the roots messages themselves. It
+  closes the narrow gap only, costs more, and pulls the gateway into interpreting
+  protocol traffic it currently forwards blind.
+- **Logged:** 2026-08-01.
+
 ### TD-3 — Competitive landscape and positioning
 
 - **Area:** overall product positioning / go-to-market, not a specific code

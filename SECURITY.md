@@ -69,8 +69,9 @@ Anything that breaks a guarantee the docs actually make:
 ## Out of scope, because it is already known and written down
 
 These are recorded limitations, not undiscovered bugs. Each one is documented in
-`docs/GO_NO_GO.md` §6 or `docs/ARCHITECTURE.md` §4, and reporting them is
-welcome only if you have found that the documented reasoning is wrong:
+`docs/GO_NO_GO.md` §6, `docs/ARCHITECTURE.md` §4 or `docs/TECH_DEBT.md`, and
+reporting them is welcome only if you have found that the documented reasoning is
+wrong:
 
 - **The approval page has no authentication.** It binds to loopback, and anyone
   with local access to that port can approve or reject. That is the v0 design,
@@ -91,6 +92,13 @@ welcome only if you have found that the documented reasoning is wrong:
   chain plus signature proves the log was not altered by someone without the key.
   It was never claimed to survive an attacker who has the key, and the docs say
   so rather than implying otherwise.
+- **The log does not say what it was watching.** Entries record tool calls and
+  nothing about the conditions they were judged under: the wrapped server, the
+  rules in force and the gateway's own version are all absent, so a file of
+  `allow` decisions cannot be told apart from a file written with no policy
+  loaded. A wrapped server can also renegotiate its own scope with the client
+  after launch, and that exchange is forwarded without being recorded. Both are
+  `docs/TECH_DEBT.md` TD-4.
 - **Ganimedes is not a sandbox.** It governs what an agent does *through the MCP
   server it wraps*. An agent that can execute arbitrary code, reach the server
   directly instead of through the gateway, or exploit something below the
