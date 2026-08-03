@@ -19,8 +19,11 @@ import (
 
 // fakeApprover is a test Approver that returns a fixed outcome and records what
 // it was asked, so the approval path can be exercised without an HTTP server.
+// url stands in for the real page's address; an empty one exercises the
+// fallback in timeoutMessage.
 type fakeApprover struct {
 	outcome  approval.Outcome
+	url      string
 	calls    int
 	lastTool string
 	lastArgs json.RawMessage
@@ -32,6 +35,8 @@ func (f *fakeApprover) Request(tool string, args json.RawMessage) approval.Outco
 	f.lastArgs = args
 	return f.outcome
 }
+
+func (f *fakeApprover) URL() string { return f.url }
 
 // testKeypair generates an Ed25519 keypair for driving the signed audit log in a
 // test.
@@ -349,7 +354,9 @@ func TestRun_RejectsHeldTool(t *testing.T) {
 
 // TestRun_TimesOutHeldTool checks the fail-closed path (Art. 2.1): when the
 // approver times out, the call is blocked just like a rejection and audited with
-// decision=timeout.
+// decision=timeout. It also checks that the error carries the approval page's
+// address: a timeout means the human never saw the request, and this error is
+// the only channel that reaches them under a real MCP client.
 func TestRun_TimesOutHeldTool(t *testing.T) {
 	t.Setenv("GO_WANT_MCP_SERVER", "1")
 
@@ -364,7 +371,7 @@ func TestRun_TimesOutHeldTool(t *testing.T) {
 	in := strings.NewReader(req)
 	var out bytes.Buffer
 
-	appr := &fakeApprover{outcome: approval.TimedOut}
+	appr := &fakeApprover{outcome: approval.TimedOut, url: "http://127.0.0.1:8765/"}
 	cfg := config.Config{
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestHelperMCPServer"},
@@ -378,8 +385,12 @@ func TestRun_TimesOutHeldTool(t *testing.T) {
 	}
 
 	got := parseResponses(t, out.Bytes())
-	if r, ok := got["7"]; !ok || r.Error == nil || r.Result != nil {
+	r, ok := got["7"]
+	if !ok || r.Error == nil || r.Result != nil {
 		t.Fatalf("id=7 want a timeout error and no result, got %+v (ok=%v)", r, ok)
+	}
+	if !strings.Contains(string(r.Error), appr.url) {
+		t.Errorf("timeout error = %s, want it to name the approval page %q", r.Error, appr.url)
 	}
 	res, err := audit.Verify(logPath, pub)
 	if err != nil {
@@ -391,6 +402,33 @@ func TestRun_TimesOutHeldTool(t *testing.T) {
 	timedOut := firstWithDecision(readEntries(t, logPath), "timeout")
 	if timedOut == nil || timedOut.Tool != "email.send" || timedOut.Error == nil {
 		t.Errorf("timeout entry = %+v, want tool=email.send with an error", timedOut)
+	}
+}
+
+// TestTimeoutMessage pins both forms of the timeout reason. The address is the
+// point of the message, so its presence is asserted rather than the exact
+// sentence; the empty-url form guards the fallback, which must not leave the
+// reader pointed at nothing.
+//
+// The "waiting" phrasing is asserted, not decorative. Its predecessor said
+// "nobody answered at", which a real client read as a service that was down,
+// so the message has to convey that the page was up and a person was what was
+// missing.
+func TestTimeoutMessage(t *testing.T) {
+	withURL := timeoutMessage("email.send", "http://127.0.0.1:8765/")
+	if !strings.Contains(withURL, "email.send") || !strings.Contains(withURL, "http://127.0.0.1:8765/") {
+		t.Errorf("timeoutMessage with a url = %q, want it to name both the tool and the page", withURL)
+	}
+	if !strings.Contains(withURL, "waiting") {
+		t.Errorf("timeoutMessage with a url = %q, want it to say the page was waiting, not that it was absent", withURL)
+	}
+
+	bare := timeoutMessage("email.send", "")
+	if !strings.Contains(bare, "email.send") {
+		t.Errorf("timeoutMessage without a url = %q, want it to name the tool", bare)
+	}
+	if strings.Contains(bare, "http") || strings.Contains(bare, "waiting for a human at") {
+		t.Errorf("timeoutMessage without a url = %q, want no dangling reference to a page", bare)
 	}
 }
 

@@ -327,7 +327,9 @@ cheapest piece (audit) second; release only what has been checked, last.
   only JSON-RPC knowledge and defines the `Approver` interface it depends on, so
   tests inject a fake approver and never bind a socket; `approval.Server` is the
   production implementation. No import cycle: `proxy → approval`, `approval →`
-  stdlib only.
+  stdlib only. `Approver` is `Request` plus `URL`: the proxy needs the address to
+  name it in the timeout error, which is the only notice of a missed approval
+  that reaches a human through an MCP client.
 - **Resolved sub-decisions (at implementation):**
   - **Transport / page:** a `localhost` HTTP page rendered with `html/template`
     (auto-escapes hostile tool names/args), refreshed with a 2-second `meta`
@@ -338,7 +340,10 @@ cheapest piece (audit) second; release only what has been checked, last.
     loopback host** (`New` rejects `0.0.0.0`, a bare `:port`, or any routable
     address). The page never leaves the machine (Art. 2.2). No authentication in
     v0: anyone with local access to the port can approve/reject; documented as an
-    honest limitation (Art. 2.4), acceptable for a local developer tool.
+    honest limitation (Art. 2.4), acceptable for a local developer tool. One
+    address serves one wrapped server, so a second server needing approvals needs
+    its own port; `run` says so on stderr when the bind fails, since a client
+    surfaces that only as a server that would not start.
   - **Timeout:** `--approval-timeout`, default `60s`, fail-closed to a denial on
     expiry (Art. 2.1, 3.4).
   - **Concurrency model:** approvals are handled **serially**. The proxy's

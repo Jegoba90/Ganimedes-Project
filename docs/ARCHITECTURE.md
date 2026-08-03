@@ -396,6 +396,14 @@ milestone-3 machinery:
   `policyErrorObject` (generalized from milestone 3's deny-specific helpers)
   produce the message. Each block reason has its own wording so the agent can tell
   a deny from a rejection from a timeout.
+- **The timeout message carries the page's address**, which is why `Approver`
+  has a `URL()` method alongside `Request`. A timeout is the one outcome nobody
+  chose: a deny was configured and a rejection was clicked, but a timeout means
+  the human never saw the request. The address is announced on stderr at startup,
+  and an MCP client routes a wrapped server's stderr to a log file its user does
+  not read, so the error returned to the agent is the only channel that reaches
+  them. An empty `URL()` falls back to the bare reason rather than pointing at
+  nothing.
 - **Fail-closed on a missing approver.** If a call requires approval but no
   approver is wired (unreachable from the CLI, which only omits the approver when
   the approval-list is empty), the call is denied, never allowed (Art. 2.1).
@@ -420,6 +428,14 @@ client's own timer.
 The approval page is started only when the config's `approve` list is non-empty;
 otherwise `run` is exactly milestone-3 behavior (no page, a nil approver). The
 page URL is logged to **stderr** (stdout is the protocol channel, Art. 3.1).
+
+A bind failure exits 1 and adds a second stderr line naming `--approval-addr`.
+The address belongs to whichever wrapped server takes it first, and a client
+launches several from one config, so the second one to ask for the default dies
+here; the bind error alone explains that to a reader who already knows the
+design, while the reader in practice is looking at a client reporting a server
+that would not start. The hint lives in the CLI rather than in `approval`,
+because the flag is the CLI's to know about (§8 layering).
 
 ## 9. Milestone 4 task list
 

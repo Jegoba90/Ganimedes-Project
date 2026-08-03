@@ -185,6 +185,63 @@ The harness was thrown away three times, and the fourth run needed none, because
 a real client is the harness. That the semi-automated client keeps being
 rewritten is still the gap for the runs that cannot use one.
 
+#### Run of 2026-08-03, walking the flow to find where it snags
+
+Not a release check. The question was whether someone else can get through the
+flow, so the target was a local build of the working tree driven by a throwaway
+Go client, and the interesting part was the error paths rather than the happy one.
+The happy path held: `scan` found 14 tools and flagged 4, `deny` returned `-32000`
+without the file ever appearing, `verify` reported 3 entries intact, and an
+approval left unanswered failed closed.
+
+| Behavior | Evidence |
+|---|---|
+| Config mistakes explain themselves | A typo'd key gave `unknown field "denny"`, malformed JSON named the offending character, and a non-loopback `--approval-addr` was refused citing Art. 2.2 |
+| A second wrapped server cannot take the port | With `127.0.0.1:8765` already held, `run` exits 1 at startup. A client shows this only as a server that would not start, so `run` now adds a line naming `--approval-addr` |
+| A timeout reaches the human | The startup line with the page's address goes to stderr, which a client files in a log nobody opens. The timeout error the agent receives now carries the address, verified to be the one actually bound (`8799` in the run, not the default) |
+| `verify` in the wrong directory misdiagnoses | With neither log nor key present it reports `no public key found`, never that there is no log there. Known, not fixed |
+| An aborted run still leaves a header | The session header is written before the approval page binds, so a run that dies at startup leaves a log declaring rules for a session that proxied nothing. Known, not fixed |
+
+**What it found beyond the two fixes.** The README omitted the one thing Art. 2.5
+requires stating plainly, that the log holds whatever crossed the wire and is as
+sensitive as that traffic. It was written in `SECURITY.md`, `DESIGN.md` and
+`GO_NO_GO.md`, and absent from the only document a person reads before deciding
+where to put the file. That is the same shape as the three README failures before
+it: the fact was true, written down, and not where the reader was.
+
+**Second half, under a real client.** Putting the address in the timeout error
+rests on an assumption a throwaway client cannot test: that a client shows the
+`message` of a tool error to the person sitting there. So the same build went
+into a Claude Code project's `.mcp.json`, wrapping `server-filesystem` with
+`read_file` and `read_text_file` denied, `write_file` held for approval, and a
+20-second timeout.
+
+| Behavior | Evidence |
+|---|---|
+| The deny reason reaches the screen | `MCP error -32000: blocked by Ganimedes policy: tool "read_text_file" is on the deny-list`, shown verbatim and unfolded, and the agent restated it in its own words |
+| The timeout reason reaches the screen, address included | `MCP error -32000: blocked by Ganimedes: approval for tool "write_file" timed out; it was waiting for a human at http://127.0.0.1:8765/`. The assumption holds: the error is a usable channel to a human |
+| Fail-closed, confirmed against the disk | The agent listed the directory afterwards. `notes.md` was never created |
+| A bypass exists and was not taken | Offered the native write tool as an alternative, the agent declined to use it unprompted, on the grounds that it would skip a control someone had put there deliberately |
+| Both attempts are in the chain | 5 entries (3 session headers, `decision=deny`, `decision=timeout`), `chain intact and signatures valid` |
+
+**What that run corrected in the wording.** The message first read `nobody
+answered at <url>`, and the agent concluded from it that the approval service was
+probably not running, offering to start it. The page was up and serving; a person
+was the missing part. A sentence about an address that goes unanswered reads as a
+dead service, and it pushed the reader toward the one action that was not needed.
+It now reads `it was waiting for a human at <url>`, which states that the page
+existed and that the decision was the reader's.
+
+**And a boundary worth naming.** The first attempt at the deny test asked the
+agent in plain language to read a file, and the log recorded nothing at all: the
+client answered with its own built-in read tool and never touched the wrapped
+server. Naming the MCP tool explicitly was what routed the call through the
+gateway. A wrapped server competes with whatever the client can already do
+itself, so an empty log does not mean an idle agent; it can mean an agent that
+worked outside MCP entirely. The README says the log covers "only the server it
+wraps", which is true and reads like a note about scope rather than the practical
+warning this is.
+
 ### L4 — Adversarial / security-property tests
 
 **What:** the properties that matter *because this is a security tool*, tested

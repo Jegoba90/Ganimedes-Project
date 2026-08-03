@@ -129,6 +129,12 @@ sequenceDiagram
     else Rejected or timeout
         H-->>G: REJECTED / TIMEOUT
         G->>A: append full entry (decision=REJECTED or TIMEOUT)
-        G-->>C: JSON-RPC error (rejected by human / timeout)
+        G-->>C: JSON-RPC error (rejected by human / timed out, naming the page)
     end
 ```
+
+The timeout error names the page's address on purpose. A rejection was somebody's
+decision, so they know where they made it; a timeout means nobody saw the request
+at all, and under a real MCP client the startup announcement on stderr went to a
+log file rather than to a person. The error travelling back up to the agent is
+then the only path left to tell them where the call was waiting.

@@ -99,6 +99,12 @@ wrong:
   forwards that exchange and records only tool calls, so the log can show a
   directory the server was handed and not the one it ended up using. See
   `docs/TECH_DEBT.md` TD-4.
+- **The client may not use the server you wrapped.** A host brings tools of its
+  own and prefers them for ordinary requests, so a plain-language instruction can
+  be answered by the client's own reader or writer without the wrapped server
+  being consulted at all. Nothing is evading the gateway there, because no call
+  was ever made to it; the consequence is that an empty log means no traffic
+  through this server rather than an agent that did nothing.
 - **Ganimedes is not a sandbox.** It governs what an agent does *through the MCP
   server it wraps*. An agent that can execute arbitrary code, reach the server
   directly instead of through the gateway, or exploit something below the

@@ -39,8 +39,16 @@ import (
 // fake without spinning up the real localhost page; internal/approval.Server is
 // the production implementation. A timeout (approval.TimedOut) fails closed to a
 // denial (Constitution Art. 2.1).
+//
+// URL is where a human answers. The proxy needs it for one reason: a call that
+// times out is the only moment the gateway can tell a human it was waiting, and
+// the error returned to the agent is the only channel that reaches them. The
+// address is announced on stderr at startup, but an MCP client captures the
+// server's stderr into a log its user does not read, so under a real client that
+// announcement is invisible.
 type Approver interface {
 	Request(tool string, args json.RawMessage) approval.Outcome
+	URL() string
 }
 
 // Run wraps the MCP server described by cfg and proxies a single client session
@@ -272,7 +280,7 @@ func handleApproval(client io.Writer, p *pending, appr Approver, log *audit.Logg
 	case approval.Rejected:
 		return blockCall(client, log, id, args, tool, audit.DecisionRejected, rejectMessage(tool))
 	default: // approval.TimedOut, and any unknown value: fail closed
-		return blockCall(client, log, id, args, tool, audit.DecisionTimeout, timeoutMessage(tool))
+		return blockCall(client, log, id, args, tool, audit.DecisionTimeout, timeoutMessage(tool, appr.URL()))
 	}
 }
 
@@ -310,8 +318,24 @@ func rejectMessage(tool string) string {
 	return fmt.Sprintf("blocked by Ganimedes: a human rejected the call to tool %q", tool)
 }
 
-func timeoutMessage(tool string) string {
-	return fmt.Sprintf("blocked by Ganimedes: approval for tool %q timed out", tool)
+// timeoutMessage names the page the call was waiting on, because a timeout is
+// the one outcome nobody chose: a deny was configured and a rejection was
+// clicked, but a timeout means the human never saw the request. Telling them
+// where it was waiting is what turns the next attempt into a decision instead of
+// a repeat. An empty url (an Approver that was never started) falls back to the
+// bare reason rather than pointing at nothing.
+//
+// "It was waiting for a human at" is deliberate, and replaced an earlier
+// "nobody answered at" that a real client read exactly wrong: an agent shown
+// that wording concluded the approval service was probably not running and
+// offered to start it, when the page was up and serving and the only thing
+// missing was a person. The sentence has to say both that the page existed and
+// that the decision is the reader's to make.
+func timeoutMessage(tool, url string) string {
+	if url == "" {
+		return fmt.Sprintf("blocked by Ganimedes: approval for tool %q timed out", tool)
+	}
+	return fmt.Sprintf("blocked by Ganimedes: approval for tool %q timed out; it was waiting for a human at %s", tool, url)
 }
 
 // noApproverMessage is the fail-closed reason when a tool requires approval but

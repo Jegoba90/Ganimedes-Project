@@ -103,6 +103,23 @@ What it does not record: the agent's prompts or its reasoning, and anything that
 never crossed MCP. It logs actions on tools, not thoughts, and only for the
 server it wraps.
 
+That last clause carries more weight than its size. A client brings tools of its
+own and will prefer them: asked in plain language to read a file, Claude Code
+used its own reader and never consulted the wrapped filesystem server, which left
+the log empty while the agent worked normally. An empty log is not evidence of an
+idle agent. It is evidence that nothing went through this server, which is a
+narrower statement than it first reads as. Naming the wrapped server's tool
+explicitly is what routes a call through the gateway, and it is also how to check
+that yours is working.
+
+What it does record deserves saying just as plainly: arguments and results,
+verbatim. If the agent reads a file holding a token, that token is now in the
+log, which makes the log as sensitive as the traffic that produced it. Ganimedes
+creates it `0600`, which POSIX honours and Windows does not, so on Windows what
+protects the file is the directory you keep it in. Redaction is a later feature
+and not one v0 has. [SECURITY.md](SECURITY.md) holds the rest of the limits that
+are known rather than waiting to be found.
+
 ## Status
 
 Early, and shipping. **`v0.3.0` is the current release**, published from a tagged
@@ -340,7 +357,17 @@ A denied call never reaches the server, and the agent gets the JSON-RPC error
 `-32000`. A call that needs approval pauses and appears at
 `http://127.0.0.1:8765` with its arguments, where you press Approve or Reject. If
 nobody answers within `--approval-timeout` (60 seconds by default) the call is
-refused: ambiguity always fails closed.
+refused: ambiguity always fails closed, and the error the agent gets back names
+the page it was waiting on.
+
+That last detail exists because the address itself is announced once, at startup,
+on stderr, and a client sends a wrapped server's stderr to a log file rather than
+to you. Keep the page open while you work, or the first you hear of a paused call
+is a tool that failed a minute later. The port belongs to whichever server takes
+it first, for the same reason: wrap a second server that also needs approvals and
+it will fail to start on finding 8765 held, which a client reports as a server
+that would not come up. Give that one its own with `--approval-addr
+127.0.0.1:8766`.
 
 `ganimedes help` lists every command and flag.
 

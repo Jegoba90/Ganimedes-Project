@@ -129,9 +129,15 @@ Full detail in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   - **Rejected:** the call is blocked; the client gets a JSON-RPC error; audited
     `decision=rejected`.
   - **Timeout:** if no human answers within `--approval-timeout` (default `60s`),
-    the call is blocked (fail-closed, Art. 2.1); audited `decision=timeout`.
+    the call is blocked (fail-closed, Art. 2.1); audited `decision=timeout`. The
+    error sent to the client names the page's address, because a timeout is the
+    outcome nobody chose and the startup announcement on stderr does not reach a
+    user whose client files that stream in a log.
 - **Precedence:** a tool on both `deny` and `approve` is denied (the stricter
   verdict).
+- **One page per wrapped server.** The address is bound by whichever run takes it
+  first; a second wrapped server with an `approve` list needs its own
+  `--approval-addr` or it exits 1 at startup, which `run` says on stderr.
 - **v0 limitation:** approvals are handled serially (one pending at a time); the
   MCP client has an independent timeout. See `ARCHITECTURE.md` §8.
 
@@ -207,7 +213,9 @@ ganimedes help
 fields contradict the kind it claims. That check runs after the seal, so it never
 reports tampering: it reports a record this build cannot classify.
 
-File permissions are `0600` (the log may contain secrets).
+File permissions are `0600` (the log may contain secrets). POSIX honours that
+mode; Windows does not, so there the file inherits the directory's ACLs and the
+directory is what keeps it private (`GO_NO_GO.md` §6).
 
 ### 6.4 Approval page (HTTP, loopback only)
 

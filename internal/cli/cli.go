@@ -257,6 +257,13 @@ func runCommand(args []string) int {
 		}
 		if err := srv.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "run: %v\n", err)
+			// The page needs a port to itself, and a client launches several
+			// wrapped servers from one config, so the second one to ask for the
+			// default address finds it taken and dies here. The bind error alone
+			// says what happened to someone who already knows the design; this
+			// line says what to do about it, because the reader is more often
+			// staring at a client reporting that a server failed to start.
+			fmt.Fprintf(os.Stderr, "run: the approval page needs a port of its own; if another wrapped server already holds %s, give this one a different one with --approval-addr\n", approvalAddr)
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "run: approval page at %s ; %d tool(s) require approval, %s timeout (fail-closed)\n",

@@ -326,9 +326,11 @@ func TestRunCommand_ApprovalBadAddr(t *testing.T) {
 }
 
 // TestRunCommand_ApprovalAddrInUse: when the approval address is already bound,
-// Start fails and run exits 1 before proxying.
+// Start fails and run exits 1 before proxying, and stderr names the flag that
+// fixes it. That second half matters because this is what a second wrapped
+// server hits when a client launches both from one config, and the reader is
+// usually looking at a client reporting a server that would not start.
 func TestRunCommand_ApprovalAddrInUse(t *testing.T) {
-	quiet(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -348,8 +350,16 @@ func TestRunCommand_ApprovalAddrInUse(t *testing.T) {
 		"--approval-addr", ln.Addr().String(),
 		"--", "x",
 	}
-	if got := Run(args); got != 1 {
-		t.Errorf("run with occupied approval addr = %d, want 1", got)
+	var code int
+	_, stderr := capture(t, func() { code = Run(args) })
+	if code != 1 {
+		t.Errorf("run with occupied approval addr = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "--approval-addr") {
+		t.Errorf("stderr = %q, want it to point at --approval-addr", stderr)
+	}
+	if !strings.Contains(stderr, ln.Addr().String()) {
+		t.Errorf("stderr = %q, want it to name the address that was taken (%s)", stderr, ln.Addr())
 	}
 }
 
