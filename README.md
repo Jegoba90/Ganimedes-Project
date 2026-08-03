@@ -63,27 +63,27 @@ This is a real log, wrapped here to fit the page (in the file each entry is a
 single line). The header opens the run:
 
 ```json
-{"seq":1,"ts":"2026-08-01T19:06:58.3998671Z","session":"35b5420e8c624ee2",
+{"seq":1,"ts":"2026-08-03T19:56:02.4925943Z","session":"f931ed3a2197b133",
  "kind":"session",
- "session_info":{"version":"v0.3.0","command":"npx",
+ "session_info":{"version":"v0.3.1","command":"npx",
    "args":["-y","@modelcontextprotocol/server-filesystem","./data"],
    "deny":["move_file"],"approve":[]},
  "prev_hash":"",
- "hash":"4eb80e2c1a2207b4265b1a0824523f3242cf2f730e04e4e97fd2ec49ccca13bf",
- "sig":"XTmCEKkjh5MPA/MI856JcTScySitFBUGf62BdgrD8AB64M1U5o+jNMLTbGYCE8KcT5UQ6qy488KcIpFPevpCBA=="}
+ "hash":"3bea4dc07bc77980a87ae04a259b487b1b6c34ca50845b57cd75d51ad30ee2f7",
+ "sig":"nUABEq7SvdT4DHC+JnqVdKailAGTXz9zj0wFbmJU0ZBFEWNb6edEnZJTAM3qc9w1EpdLER13HBiVFPDlfdH/DQ=="}
 ```
 
 Then the agent asks that server to write a file:
 
 ```json
-{"seq":2,"ts":"2026-08-01T19:07:06.3818805Z","session":"35b5420e8c624ee2",
- "tool":"write_file","args":{"path":"notes.md","content":"hello"},
+{"seq":2,"ts":"2026-08-03T19:56:04.3236649Z","session":"f931ed3a2197b133",
+ "tool":"write_file","args":{"content":"hello","path":"notes.md"},
  "result":{"content":[{"type":"text","text":"Successfully wrote to notes.md"}],
    "structuredContent":{"content":"Successfully wrote to notes.md"}},
  "decision":"allow",
- "prev_hash":"4eb80e2c1a2207b4265b1a0824523f3242cf2f730e04e4e97fd2ec49ccca13bf",
- "hash":"9c210dc900addf97376fdc1deec2968229324a004327aea446cd721c362290b0",
- "sig":"2Ic5cCG7KVc1gQIOZygNMwOjaes2nRGdK5chHNuTdW8a+ZD72/5b4zIqkMkghnugO43k0lrJrDL4OxaykaluAw=="}
+ "prev_hash":"3bea4dc07bc77980a87ae04a259b487b1b6c34ca50845b57cd75d51ad30ee2f7",
+ "hash":"bf39c74910ec01935ad642e1e09dd2db35d4f504295c34611175248cb0974f6b",
+ "sig":"JPLt8uytK4I5iz4nqrB3ypQZPpvvpOd9Q33x4QP5GAvFlLHczxu19DyJjPa9IT5B2rnGk4tI7gLYOWkU5cgjBQ=="}
 ```
 
 `tool`, `args` and `result` are what the agent did, kept verbatim as they
@@ -122,17 +122,22 @@ are known rather than waiting to be found.
 
 ## Status
 
-Early, and shipping. **`v0.3.0` is the current release**, published from a tagged
-commit with checksums and a build provenance attestation on every binary. v0 does
-**one thing well** instead of ten things badly, and everything it does is listed
-below alongside what it deliberately does not do.
+Early, and shipping. Every release is published from a tagged commit, with
+checksums and a build provenance attestation on every binary, and the [latest
+one](https://github.com/Jegoba90/Ganimedes-Project/releases/latest) is always the
+one to take. v0 does **one thing well** instead of ten things badly, and
+everything it does is listed below alongside what it deliberately does not do.
 
 Each release so far has been shaped by checking the thing that shipped rather
 than the thing that was written. `v0.2.0` came from auditing the published
 binaries and finding four places where the tool described itself inaccurately.
 `v0.3.0` came from running the gateway under a real MCP client for the first
 time, which showed that the log recorded what an agent did without recording the
-rules it was judged under. Logs written by earlier versions still verify.
+rules it was judged under. `v0.3.1` came from walking the install and the first
+run as a stranger would, which found the gateway falling silent in the one place
+it most needed to speak: a call held for approval that nobody answered told the
+agent only that it had timed out, never where a human had been asked. Logs
+written by earlier versions still verify.
 
 ## Quick start
 
@@ -147,13 +152,18 @@ Download the file for your platform, and `SHA256SUMS`, from the [latest
 release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest), then
 follow the lines for your system.
 
+Those lines write the version as `<version>`, because the filename carries
+whichever one you just downloaded and this page would otherwise name an older
+release than the link above hands you. Substitute what you actually have, or the
+shell will tell you the file does not exist.
+
 #### Linux
 
 ```sh
 cd ~/Downloads
-sha256sum -c SHA256SUMS --ignore-missing   # ganimedes_v0.3.0_linux_amd64: OK
-chmod +x ganimedes_v0.3.0_linux_amd64
-./ganimedes_v0.3.0_linux_amd64 version     # ganimedes v0.3.0
+sha256sum -c SHA256SUMS --ignore-missing   # ganimedes_<version>_linux_amd64: OK
+chmod +x ganimedes_<version>_linux_amd64
+./ganimedes_<version>_linux_amd64 version  # ganimedes <version>
 ```
 
 Use `linux_arm64` instead if `uname -m` says `aarch64`. The `chmod` is not
@@ -169,9 +179,9 @@ macOS form below, which needs no flags.
 
 ```sh
 cd ~/Downloads
-shasum -a 256 ganimedes_v0.3.0_darwin_arm64   # compare with the line in SHA256SUMS
-chmod +x ganimedes_v0.3.0_darwin_arm64
-./ganimedes_v0.3.0_darwin_arm64 version       # ganimedes v0.3.0
+shasum -a 256 ganimedes_<version>_darwin_arm64   # compare with the line in SHA256SUMS
+chmod +x ganimedes_<version>_darwin_arm64
+./ganimedes_<version>_darwin_arm64 version       # ganimedes <version>
 ```
 
 Apple Silicon is `darwin_arm64`; Intel Macs are `darwin_amd64`. macOS ships
@@ -184,16 +194,16 @@ quarantined the download, which browsers do and these unsigned binaries do not
 override. Clear it and run again:
 
 ```sh
-xattr -d com.apple.quarantine ganimedes_v0.3.0_darwin_arm64
+xattr -d com.apple.quarantine ganimedes_<version>_darwin_arm64
 ```
 
 #### Windows
 
 ```powershell
 cd ~\Downloads
-(Get-FileHash ganimedes_v0.3.0_windows_amd64.exe -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash ganimedes_<version>_windows_amd64.exe -Algorithm SHA256).Hash.ToLower()
 # compare with the matching line in SHA256SUMS
-.\ganimedes_v0.3.0_windows_amd64.exe version   # ganimedes v0.3.0
+.\ganimedes_<version>_windows_amd64.exe version   # ganimedes <version>
 ```
 
 There is no permission to grant and no quarantine to clear. SmartScreen may say
@@ -208,8 +218,8 @@ put the file on your PATH. On Linux and macOS one command does the move, the
 rename and the execute bit at once:
 
 ```sh
-sudo install -m 755 ganimedes_v0.3.0_linux_amd64 /usr/local/bin/ganimedes
-ganimedes version   # ganimedes v0.3.0
+sudo install -m 755 ganimedes_<version>_linux_amd64 /usr/local/bin/ganimedes
+ganimedes version   # ganimedes <version>
 ```
 
 On Windows, rename it to `ganimedes.exe` and move it into any folder already on
@@ -222,7 +232,7 @@ intact, not where it came from. From `v0.2.0` on, each binary also carries a bui
 provenance attestation, which is checked against GitHub instead:
 
 ```sh
-gh attestation verify ganimedes_v0.3.0_linux_amd64 --repo Jegoba90/Ganimedes-Project
+gh attestation verify ganimedes_<version>_linux_amd64 --repo Jegoba90/Ganimedes-Project
 ```
 
 With a Go toolchain you can skip the download entirely:
@@ -334,8 +344,10 @@ and flags the risky ones. It reports only, and enforces nothing:
 
 ```sh
 ganimedes scan -- npx -y @modelcontextprotocol/server-filesystem ./data
-#   FLAG  write_file   matched: write, create
-#   FLAG  edit_file    matched: edit
+#   FLAG  write_file        matched: write, create
+#   FLAG  edit_file         matched: edit
+#   FLAG  create_directory  matched: create
+#   FLAG  move_file         matched: rename
 #   4 of 14 tool(s) flagged for review.
 ```
 
