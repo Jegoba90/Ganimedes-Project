@@ -230,7 +230,10 @@ probably not running, offering to start it. The page was up and serving; a perso
 was the missing part. A sentence about an address that goes unanswered reads as a
 dead service, and it pushed the reader toward the one action that was not needed.
 It now reads `it was waiting for a human at <url>`, which states that the page
-existed and that the decision was the reader's.
+existed and that the decision was the reader's. That replacement was re-run
+against the real server before it was committed, and again against the published
+binary once `v0.3.1` shipped (see the artifact run below), because a message is
+only true of what people can download.
 
 **And a boundary worth naming.** The first attempt at the deny test asked the
 agent in plain language to read a file, and the log recorded nothing at all: the
@@ -327,6 +330,30 @@ caught:
   to 40 differing bytes out of ~7 MB on five targets, and 72 on darwin/arm64, where
   Go adds an ad-hoc code signature and the build ID lives in the page whose hash
   the signature covers.
+
+#### Run of 2026-08-03, against the published `v0.3.1` artifacts
+
+The whole table, run within the hour of publishing. It is also the first time this
+was done for a release since `v0.2.0`: **`v0.3.0` shipped and was never checked
+from outside**, which is a gap in a section whose title says these things are
+verified rather than assumed, and is written here rather than quietly skipped.
+
+| Check | Evidence |
+|---|---|
+| Anonymous download | HTTP 200 on all seven assets, six binaries plus `SHA256SUMS`, with no token |
+| Checksums | `sha256sum -c`: 6 of 6 `OK`. Negative control: one byte appended to a copy gives `FAILED`, so the check is checking |
+| Buildinfo | All six carry `vcs.revision=b66f5c2db347...`, the exact tagged commit, with `vcs.modified=false`, `-trimpath=true`, `CGO_ENABLED=0`, and a `GOOS`/`GOARCH` pair matching the filename. Toolchain `go1.22.12` |
+| Real format | Mach-O for darwin, ELF for linux, PE32+ for windows, each with the architecture its name claims. The linux binary is `statically linked, stripped` |
+| Leaked paths | Zero occurrences of `/home/runner` or a Windows user directory in any of the six |
+| Attestation | `gh attestation verify` exits 0 on all six. Negative control: the one-byte-longer copy fails with HTTP 404, since no attestation exists for that digest |
+| Reproducible | The tag rebuilt from a fresh clone with the runner's toolchain differs from the published linux/amd64 binary in **39 bytes**, all inside the build ID's host components. The content ID is identical (`0ge-jHa7G2wDs2y-ZVDL`), which is the `v0.1.0` result again |
+| Version stamp | The published `.exe` prints `ganimedes v0.3.1`, and the session header it writes carries `"version":"v0.3.1"`, with the `v`, because the workflow stamps `GITHUB_REF_NAME` |
+| Shipped behavior | The published binary was driven against a real MCP server: the timeout error reads `it was waiting for a human at http://127.0.0.1:8811/`, naming the port actually bound rather than the default; the deny reason is unchanged; no file was created; `verify` reports 3 entries with the chain intact |
+
+That last row is the one worth having. The wording it confirms was written, tested
+and re-checked locally the same day, but a message is only true of the binary
+people can download, and until this run nothing had established that the sentence
+in the README was the sentence in the release.
 
 ## 2. Where Postman *might* re-enter (forward note, not a decision)
 
