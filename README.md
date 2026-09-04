@@ -30,6 +30,40 @@ approval on a local page, and every call is written to a tamper-evident log.
        alt="Ganimedes sits inline as an MCP gateway between the agent and the real MCP server. On the agent side every tools/call is inspected and then allowed, denied, or held for human approval. On the server side traffic is watched and recorded rather than policed. The log opens with the rules in force, and every call is signed into it.">
 </p>
 
+## See it in thirty seconds
+
+Wrap a server, let an agent write one file through it, and ask whether the record
+of that can still be trusted. The first command does not return: it is the gateway
+holding the session open, and an agent pointed at it works exactly as before.
+
+```console
+$ ganimedes run -- npx -y @modelcontextprotocol/server-filesystem ./data
+run: generated a new signing key at "ganimedes-signing.key" (public key at "ganimedes-signing.pub")
+```
+
+Point your client at that line ([how](#point-your-client-at-it)), let the agent
+write one file, then stop the gateway and ask:
+
+```console
+$ ganimedes verify
+audit log OK: 2 entries, chain intact and signatures valid (ganimedes-audit.jsonl)
+```
+
+Two entries for one tool call, because the run's own header is the first of them.
+Now open the log and change that call's `content` from `hello` to `oops` — the
+single edit someone would make to cover a track — and ask the same question again:
+
+```console
+$ ganimedes verify
+audit log TAMPERED: entry 2: content was modified (hash mismatch: stored d99dd9ff85cc…, recomputed 339cbcb74eeb…)
+verification stopped at the first break; entries after it were not checked
+```
+
+`verify` exits `0` on the first and `1` on the second, so a pipeline can gate on
+it. Nothing was consulted but the file and the public key: no server, no account,
+no network. That is the whole product in two commands, and the rest of this page
+is the detail behind them.
+
 ## Governance for agents, not a sandbox
 
 Ganimedes is **governance for AI agents**: know and prove what your agents did,
