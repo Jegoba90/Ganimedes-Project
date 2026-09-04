@@ -27,7 +27,7 @@ approval on a local page, and every call is written to a tamper-evident log.
 
 <p align="center">
   <img src="assets/architecture.svg" width="820"
-       alt="Ganimedes sits inline as an MCP gateway between the agent and the real MCP server. On the agent side every tools/call is inspected and then allowed, denied, or held for human approval. On the server side traffic is watched and recorded rather than policed. The log opens with the rules in force, and every call is signed into it.">
+       alt="Ganimedes sits inline as an MCP gateway between the agent and the real MCP server. On the agent side every tools/call is inspected and then allowed, denied, or held for human approval; a denied call turns back at the gateway with a JSON-RPC -32000 error and never reaches the server, and that error is the one message Ganimedes composes rather than forwards. Human approval sits outside the binary, on a localhost page, joined to the policy step by a dashed link because the person may not be there when the call is held. On the server side traffic is watched and recorded rather than policed. The log opens with the rules in force, and every call is signed into it.">
 </p>
 
 ## See it in thirty seconds

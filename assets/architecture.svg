@@ -7,10 +7,16 @@
             orient="auto-start-reverse">
       <path d="M0,0 L7,3.5 L0,7 Z" fill="#8593a6"/>
     </marker>
+    <!-- Second marker in the enforcement gold, for the one arrow Ganimedes
+         writes itself rather than forwards: the error returned to a denied call. -->
+    <marker id="ar-deny" markerWidth="9" markerHeight="9" refX="7" refY="3.5"
+            orient="auto-start-reverse">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#c2912f"/>
+    </marker>
   </defs>
 
   <rect x="6" y="6" width="1028" height="474" rx="18" fill="#f7f8fa" stroke="#e4e8ee"/>
-  <text x="40" y="48" font-size="12" letter-spacing="2" fill="#95a2b3">GANIMEDES · INLINE MCP GATEWAY</text>
+  <text x="40" y="48" font-size="12" letter-spacing="2" fill="#5c6b80">GANIMEDES · INLINE MCP GATEWAY</text>
 
   <!-- links (drawn first, masked under the shields) -->
   <line x1="260" y1="250" x2="380" y2="250" stroke="#8593a6" stroke-width="1.6"
@@ -18,30 +24,43 @@
   <line x1="680" y1="250" x2="800" y2="250" stroke="#8593a6" stroke-width="1.6"
         marker-start="url(#ar)" marker-end="url(#ar)"/>
 
+  <!-- The deny path. It turns back at the shield because a blocked call never
+       reaches the server, and it is gold rather than grey because this is the
+       one message the gateway composes instead of forwarding (proxy package doc:
+       the deliberate, documented exception to protocol transparency). -->
+  <path d="M320,268 V288 H266" fill="none" stroke="#c2912f" stroke-width="1.6"
+        marker-end="url(#ar-deny)"/>
+  <text x="320" y="307" text-anchor="middle" font-size="11" fill="#8a6414">denied · -32000</text>
+
   <!-- Agent -->
   <rect x="80" y="200" width="180" height="100" rx="12" fill="#ffffff" stroke="#5b7fb0" stroke-width="1.6"/>
   <text x="170" y="246" text-anchor="middle" font-size="17" fill="#1b2431">Agent</text>
   <text x="170" y="267" text-anchor="middle" font-size="12" fill="#66748a">MCP client</text>
 
   <!-- Gateway container -->
-  <rect x="380" y="104" width="300" height="292" rx="16" fill="#eef1f6" stroke="#c6d0de" stroke-width="1.6"/>
-  <text x="530" y="132" text-anchor="middle" font-size="14.5" fill="#33425a" font-weight="600">Ganimedes gateway</text>
-  <text x="530" y="150" text-anchor="middle" font-size="11" fill="#7a889d">single Go binary</text>
-
-  <!-- Human approval chip -->
-  <rect x="404" y="162" width="252" height="56" rx="10" fill="#ffffff" stroke="#d5dde9"/>
-  <text x="530" y="186" text-anchor="middle" font-size="13.5" fill="#1b2431">Human approval</text>
-  <text x="530" y="204" text-anchor="middle" font-size="11" fill="#6b7a8f">localhost page</text>
+  <rect x="380" y="140" width="300" height="240" rx="16" fill="#eef1f6" stroke="#c6d0de" stroke-width="1.6"/>
+  <text x="530" y="168" text-anchor="middle" font-size="14.5" fill="#33425a" font-weight="600">Ganimedes gateway</text>
+  <text x="530" y="186" text-anchor="middle" font-size="11" fill="#5c6b80">single Go binary</text>
 
   <!-- Policy chip (aligned with the main line) -->
   <rect x="404" y="222" width="252" height="56" rx="10" fill="#ffffff" stroke="#aebfd6" stroke-width="1.6"/>
   <text x="530" y="246" text-anchor="middle" font-size="13.5" fill="#1b2431" font-weight="600">Policy</text>
-  <text x="530" y="264" text-anchor="middle" font-size="11" fill="#6b7a8f">deny · approve</text>
+  <text x="530" y="264" text-anchor="middle" font-size="11" fill="#5c6b80">deny · approve</text>
 
   <!-- Audit chip -->
-  <rect x="404" y="282" width="252" height="56" rx="10" fill="#ffffff" stroke="#d5dde9"/>
-  <text x="530" y="306" text-anchor="middle" font-size="13.5" fill="#1b2431">Signed audit log</text>
-  <text x="530" y="324" text-anchor="middle" font-size="11" fill="#6b7a8f">hash-chained</text>
+  <rect x="404" y="296" width="252" height="56" rx="10" fill="#ffffff" stroke="#d5dde9"/>
+  <text x="530" y="320" text-anchor="middle" font-size="13.5" fill="#1b2431">Signed audit log</text>
+  <text x="530" y="338" text-anchor="middle" font-size="11" fill="#5c6b80">hash-chained</text>
+
+  <!-- The human sits outside the binary, because they are not part of it: the
+       gateway asks and waits, and if nobody answers within the timeout the call
+       is refused. The connector is dashed for that reason - it is the one link
+       in this picture that may not be there when it is needed. -->
+  <rect x="520" y="52" width="200" height="54" rx="10" fill="#ffffff" stroke="#c2912f" stroke-width="1.4"/>
+  <text x="620" y="76" text-anchor="middle" font-size="13.5" fill="#1b2431">Human approval</text>
+  <text x="620" y="94" text-anchor="middle" font-size="11" fill="#5c6b80">localhost page</text>
+  <line x1="620" y1="106" x2="620" y2="222" stroke="#8593a6" stroke-width="1.4"
+        stroke-dasharray="5 4" marker-start="url(#ar)" marker-end="url(#ar)"/>
 
   <!-- MCP Server -->
   <rect x="800" y="200" width="180" height="100" rx="12" fill="#ffffff" stroke="#6f9e4d" stroke-width="1.6"/>
@@ -62,5 +81,5 @@
   <circle cx="740" cy="250" r="3.2" fill="#8593a6"/>
 
   <!-- caption -->
-  <text x="530" y="444" text-anchor="middle" font-size="12.5" fill="#8492a4">Every tools/call is inspected, then allowed, denied, or held for approval, and signed into a log that opens with the rules in force.</text>
+  <text x="530" y="444" text-anchor="middle" font-size="12.5" fill="#5c6b80">Every tools/call is inspected, then allowed, denied, or held for approval, and signed into a log that opens with the rules in force.</text>
 </svg>
