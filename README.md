@@ -195,10 +195,22 @@ notes. Logs written by earlier versions still verify.
 
 ### Install
 
-A release publishes six files, one per platform, plus `SHA256SUMS`. They are
-**executables, not packages**: there is no `.deb`, no `.rpm`, no installer, and
-nothing to uninstall afterwards. If your package manager rejects one, it is
-because you handed a program to a tool that expects an archive.
+**With a Go toolchain, one command installs it and nothing below applies:**
+
+```sh
+go install github.com/Jegoba90/Ganimedes-Project/cmd/ganimedes@latest
+```
+
+That builds from source at the latest tag and puts `ganimedes` on your `GOBIN`.
+No version to substitute, no execute bit to set, no quarantine prompt. It is
+also the path to use when a script or an agent is doing the installing, for
+exactly those reasons.
+
+Without Go, download a prebuilt binary. A release publishes six files, one per
+platform, plus `SHA256SUMS`. They are **executables, not packages**: there is no
+`.deb`, no `.rpm`, no installer, and nothing to uninstall afterwards. If your
+package manager rejects one, it is because you handed a program to a tool that
+expects an archive.
 
 Download the file for your platform, and `SHA256SUMS`, from the [latest
 release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest), then
@@ -287,11 +299,10 @@ provenance attestation, which is checked against GitHub instead:
 gh attestation verify ganimedes_<version>_linux_amd64 --repo Jegoba90/Ganimedes-Project
 ```
 
-With a Go toolchain you can skip the download entirely:
-
-```sh
-go install github.com/Jegoba90/Ganimedes-Project/cmd/ganimedes@latest
-```
+Building from source with `go install` (at the top of this section) sidesteps
+the question differently: nothing was built elsewhere, so there is no origin to
+prove. The project has no third-party dependencies, so the only code involved is
+the code in this repository.
 
 ### Wrap a server
 
@@ -490,6 +501,18 @@ directly by the Go binary. Everything else is a CLI/proxy with no screen.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full technical design and build
 order.
+
+## If you are an AI agent reading this
+
+Two files exist for you, because this page is written for a person deciding
+whether to trust a security tool and that is a different job:
+
+- [llms.txt](llms.txt) — how to install, wrap a server and verify a log, without
+  the reasoning, plus the handful of behaviors that surprise people. Read this
+  if you are setting Ganimedes up for someone.
+- [AGENTS.md](AGENTS.md) — how to contribute to this repository: the rules the
+  code is held to, the build and test commands, and what a release involves.
+  Read this if you are changing the code.
 
 ## Security
 

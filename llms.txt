@@ -1,0 +1,78 @@
+# Ganimedes
+
+> A local, zero-dependency governance gateway for AI agents. It sits between an
+> MCP client and one MCP server, records every `tools/call` in a hash-chained,
+> Ed25519-signed log you can verify offline, blocks tools on a deny-list, and
+> pauses tools on an approval-list for a human. One static Go binary, no runtime,
+> no account, no network.
+
+Ganimedes is **not** an MCP server, so it will not appear in MCP server
+registries. It is a wrapper: an existing server's `command` and `args` move
+behind `ganimedes run --`, and the agent sees the same tools as before.
+
+It is **not a sandbox**. It governs what an agent does *through the server it
+wraps*. It does not isolate processes and does not stop an attacker who already
+controls the machine.
+
+## Install (one command, no placeholders)
+
+With a Go toolchain — this is the path to prefer when scripting or automating,
+because it needs no version substitution and no `chmod`:
+
+```sh
+go install github.com/Jegoba90/Ganimedes-Project/cmd/ganimedes@latest
+```
+
+Without Go, download the binary for the platform from the [latest
+release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest). The
+filenames carry a version (`ganimedes_v0.3.3_linux_amd64`); the README's install
+commands write it as `<version>` and it must be substituted with the one
+actually downloaded.
+
+## Wrap a server
+
+Given an existing MCP client config entry:
+
+```json
+{"mcpServers": {"filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "./data"]}}}
+```
+
+Move the command behind `ganimedes run --`, and use absolute paths for all three
+(the binary, the log, the key), because a client is not a shell and may not pass
+a `PATH` or run where you expect:
+
+```json
+{"mcpServers": {"filesystem": {"command": "/usr/local/bin/ganimedes", "args": ["run", "--log", "/abs/audit.jsonl", "--signing-key", "/abs/signing.key", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "./data"]}}}
+```
+
+The directory holding those paths must already exist; `run` creates the files
+but not the directory. Restart the client afterward.
+
+## Commands
+
+- `ganimedes run [--config p] [--log p] [--signing-key p] [--approval-addr host:port] [--approval-timeout d] -- <server-cmd>`: wrap a server. Does not return; it holds the session open.
+- `ganimedes verify [--pubkey p] [log-path]`: check the chain and signatures. Exit 0 intact, 1 broken — a pipeline can gate on it.
+- `ganimedes scan -- <server-cmd>`: list the server's tools and flag risky ones. Reports only, enforces nothing.
+- `ganimedes version`, `ganimedes help`.
+
+Config is JSON with four keys, all optional: `command`, `args`, `deny` (tool
+names blocked outright), `approve` (tool names held for a human). Unknown keys
+are rejected rather than ignored, so a typo fails loudly.
+
+## Things that will otherwise surprise you
+
+- **An empty log does not mean an idle agent.** A client brings tools of its own and prefers them: asked in plain language to read a file, it may use its own reader and never call the wrapped server. Name the wrapped server's tool explicitly to route a call through the gateway.
+- **The log holds whatever crossed the wire**, arguments and results verbatim, secrets included. It is created `0600`; POSIX honors that, Windows does not.
+- **The approval page is loopback-only and has no login.** Anyone with local access to the port can decide. It announces its address on stderr once, which a client files into a log nobody reads, so keep the page open while working.
+- **One approval page per port.** Wrapping a second server that also needs approvals requires `--approval-addr 127.0.0.1:8766`, or it fails to start.
+- **JSON-RPC batching is refused.** A request line holding an array is blocked whole; each call must be its own message.
+- **A wrapped server can renegotiate its scope** with the client after launch (MCP Roots), so the log can show a directory the server was handed and not the one it used.
+
+## Documentation
+
+- [README](https://github.com/Jegoba90/Ganimedes-Project/blob/main/README.md): install, wrapping, blocking and approving, with worked examples.
+- [SECURITY.md](https://github.com/Jegoba90/Ganimedes-Project/blob/main/SECURITY.md): what counts as a vulnerability here, what is already known and accepted, how to verify a download.
+- [docs/ARCHITECTURE.md](https://github.com/Jegoba90/Ganimedes-Project/blob/main/docs/ARCHITECTURE.md): how the proxy, the chain and the approval gate actually work.
+- [docs/DESIGN.md](https://github.com/Jegoba90/Ganimedes-Project/blob/main/docs/DESIGN.md): the decision log, including what was considered and rejected.
+- [docs/TECH_DEBT.md](https://github.com/Jegoba90/Ganimedes-Project/blob/main/docs/TECH_DEBT.md): known gaps that are open, with the reasoning for deferring each.
+- [Release notes](https://github.com/Jegoba90/Ganimedes-Project/releases): what changed per version and how each problem was found.
