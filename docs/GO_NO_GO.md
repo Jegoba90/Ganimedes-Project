@@ -144,6 +144,19 @@ stay documented (Art. 2.5, 6.3).
   slow human approval can trip it. `DESIGN.md` §7.
 - **No authentication on the approval page.** Loopback-only; anyone with local
   access to the port can approve/reject. `DESIGN.md` §7, `approval` package doc.
+  Narrowed on 2026-09-22 (`v0.3.2`): a decision POST must now carry the run's
+  CSRF token, so a page from another origin can no longer decide for a human
+  through their browser. This entry still stands for the local case — whoever
+  can load the page can read the token — but the cross-site case is closed, not
+  accepted.
+- **JSON-RPC batching is refused.** A request line holding an array is blocked
+  whole with one error per id, because the policy engine and the audit log both
+  work one call at a time and v0 will not guess at what it cannot judge
+  (`v0.3.3`, `DESIGN.md` §7). Batching left the MCP spec in `2025-06-18`.
+- **An unanswered call holds its request id.** Pending entries are cleared by
+  their response, so a call the server never answers keeps its id occupied for
+  the session and a later reuse is refused. Deliberate: any expiry short enough
+  to free a stuck id also frees one whose response is merely slow (`v0.3.3`).
 - **Audit log holds secrets.** Full args/results may contain tokens or PII; the
   file is `0600`, redaction is a later feature (Art. 2.5).
 - **Tail truncation not detectable.** Removing entries from the end leaves a

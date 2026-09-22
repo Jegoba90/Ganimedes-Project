@@ -429,3 +429,74 @@ cheapest piece (audit) second; release only what has been checked, last.
   further down. Revisit only if a distributor asks. No `NOTICE` file either: it
   exists to force attribution to propagate into derivative works (§4(d)), an
   obligation not worth imposing at v0.
+
+### Refusing what the gateway cannot judge (decided 2026-09-22)
+
+- **Decision:** two request shapes the proxy has no way to evaluate are now
+  blocked instead of forwarded — a JSON-RPC batch (a line holding a top-level
+  array) and a `tools/call` whose id is already waiting on a response. Both
+  return a JSON-RPC error and, when auditing, an entry with `decision=deny`.
+- **What forced it:** reading the code against [`SECURITY.md`](../SECURITY.md)'s
+  own in-scope list rather than against the limitations written beside it. "A way
+  to make the gateway forward without a decision" described the batch exactly:
+  the single-message unmarshal cannot parse an array, and the fallback forwarded
+  anything it could not read, so a `tools/call` inside one reached the server
+  with the deny-list and the approval-list both configured and both bypassed, and
+  no audit entry either.
+- **The id case is not on that list, which is worth noticing.** `remember`
+  overwrote silently, so two calls sharing an id left one of them logged under
+  the other's tool name and the other unlogged. The list asks for "an altered
+  audit log that `ganimedes verify` still accepts" — a forged chain, a forged
+  signature, a canonicalisation gap. This log was none of those: it was sealed
+  honestly and was already wrong when it was written, so verification had
+  nothing to catch. The in-scope list describes attacks on the record *after*
+  the fact and assumes the writing of it is faithful. That assumption is the
+  thing this found, and it is worth stating somewhere the list itself can be
+  revised against.
+- **Reachable, not theoretical.** Batching is legal on the wire under MCP
+  `2024-11-05` and `2025-03-26` and was removed only in `2025-06-18`, and `run`
+  negotiates no protocol version of its own because it proxies bytes between two
+  parties that negotiate with each other.
+- **Why refuse rather than handle.** Judging a batch's elements individually
+  means building batch semantics — split, decide per element, re-encode the
+  survivors, recombine the responses — a feature the spec itself has retired, on
+  a proxy that holds the verbatim-bytes invariant everywhere else. Correlating
+  two calls that share an id means guessing, because the wire does not say which
+  response belongs to which request. Art. 2.1 already answers both: ambiguity
+  fails closed.
+- **An approved call is refused too** if its id collided while the human was
+  deciding. The approval is about the call; it is not a statement that the record
+  of the call can be trusted.
+- **The cost, stated rather than hidden.** A pending entry is cleared only by its
+  response, so a call the server never answers holds its id for the rest of the
+  session. No expiry: a TTL short enough to release a stuck id is also short
+  enough to release one whose response is merely slow, which puts the
+  misattribution back. Every MCP client counts ids upward, so this costs nothing
+  in practice. One narrower gap stays open deliberately: `idKey` compares raw id
+  bytes, so `1` and `1.0` are distinct keys ([`TECH_DEBT.md`](TECH_DEBT.md) TD-5).
+- **Both were checked against a deliberate break** of the code they cover, to
+  confirm the new tests are able to fail rather than passing by construction.
+
+### The approval page proves the click came from itself (decided 2026-09-22)
+
+- **Decision:** `POST /decision` requires a CSRF token — 32 random bytes
+  generated per run, embedded in every rendered form, compared in constant time —
+  before it reads the id or the action. Pending ids became random too (16 bytes)
+  instead of the counter `1, 2, 3…`.
+- **What forced it:** the same review. `/decision` trusted any well-formed POST,
+  so a page on any other site, open in the same browser, could submit a hidden
+  form to `127.0.0.1:8765` and approve a held call the human never saw. A
+  cross-origin form POST needs no preflight and no cookie; nothing refused it.
+  The sequential ids meant the attacker did not even need to see the page to know
+  which ids were worth trying.
+- **Why a token and not authentication.** The Same-Origin Policy lets a hostile
+  page *send* that request but never *read* the page Ganimedes served, so it
+  cannot learn the token. That closes the cross-site case without adding a login
+  to a local developer tool, and it changes nothing about the documented limit
+  that anyone with local access to the port can still decide: they can read the
+  token too. Those are different attackers, and only one of them was ever
+  accepted (`SECURITY.md`).
+- **A knock-on the fix had to carry:** ids had been doubling as the page's
+  display order. With random ids that ordering is gone, so `handleIndex` sorts by
+  each pending call's timestamp instead, and the longest-waiting call still leads
+  the list.

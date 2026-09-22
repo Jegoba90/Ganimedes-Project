@@ -170,8 +170,26 @@ time, which showed that the log recorded what an agent did without recording the
 rules it was judged under. `v0.3.1` came from walking the install and the first
 run as a stranger would, which found the gateway falling silent in the one place
 it most needed to speak: a call held for approval that nobody answered told the
-agent only that it had timed out, never where a human had been asked. Logs
-written by earlier versions still verify.
+agent only that it had timed out, never where a human had been asked.
+
+`v0.3.2` and `v0.3.3` came from a different exercise: reading the code against
+[SECURITY.md](SECURITY.md)'s own list of what counts as a vulnerability here,
+instead of against the limitations already written beside it. Two lines on that
+list turned out to describe the code as it stood. A page from any other site
+could approve a held call through your browser without you ever seeing it,
+because `/decision` asked for no proof the click came from the page Ganimedes
+rendered (`v0.3.2`). And a `tools/call` wrapped in a JSON-RPC batch — a legal
+wire form under the MCP protocol versions before `2025-06-18` — reached the
+server with no policy check and no audit entry, deny-list and approval-list both
+bypassed (`v0.3.3`).
+
+A third problem surfaced beside them that the list does not name, and the
+omission is the interesting part: two calls reusing one request id could leave
+one of them logged under the other's tool name, or unlogged entirely (`v0.3.3`).
+The list asks for an altered log that `verify` still accepts; this log was
+signed honestly and was wrong when it was written, which no amount of verifying
+would catch. Each of the three is closed, and the reasoning is in the release
+notes. Logs written by earlier versions still verify.
 
 ## Quick start
 

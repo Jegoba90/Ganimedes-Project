@@ -263,11 +263,34 @@ deliberately rather than incidentally.
 | The wrapped server process dies mid-session | ⬜ not tested |
 | Audit log write fails (disk full / permissions) mid-session | ⬜ not tested — code path exists (`proxy.go`'s `recordResponse` logs to stderr and swallows the error per the fail-open design), no test proves the proxy keeps running |
 | CRLF-terminated log lines still parse | ✅ implicitly via `scanLines`' `TrimRight(line, "\r\n")`, but no explicit test |
+| A `tools/call` smuggled inside a JSON-RPC batch reaches the server unjudged | ✅ `TestRun_RefusesJSONRPCBatch`, `TestRun_RefusesBatchWithoutLog`, plus `TestIsJSONArray` / `TestBatchIDs` / `TestWriteBatchRefusal` (added 2026-09-22, `v0.3.3`) |
+| Two overlapping calls reusing one JSON-RPC id corrupt the audit pairing | ✅ `TestPending_Remember_RejectsCollision`, `TestHandleRequest_RejectsIDReuse`, `TestHandleApproval_RejectsIDReuse`, and `TestHandleRequest_AllowsIDReuseAfterCompletion` for the reuse that must stay allowed (added 2026-09-22, `v0.3.3`) |
+| A cross-site form POST decides a held approval | ✅ `TestHandleDecision_CSRF` (forged, empty and truncated tokens all rejected, call stays pending), with `TestNew_CSRFToken` and `TestHandleIndex_CarriesCSRFToken` (added 2026-09-22, `v0.3.2`) |
+| Pending approval ids are guessable | ✅ `TestRequest_PendingIDsAreRandom`, plus `TestHandleIndex_OrdersByArrival` for the ordering the random ids displaced (added 2026-09-22, `v0.3.2`) |
+
+**Both 2026-09-22 sets were checked against a deliberate break** of the code they
+cover — the collision check removed from `remember`, the batch branch removed
+from `handleRequest` — and each failed as it should before the fix was restored.
+A security test that has never been seen to fail is a test whose ability to fail
+is an assumption (the practice `TestVerify_AcceptsALogWrittenBeforeSessionHeaders`
+established on 2026-08-01).
+
+**Not covered, and worth saying plainly:** none of the 2026-09-22 fixes have been
+exercised under a real MCP client (no L3 run accompanied them). The batch path in
+particular is proven against `TestHelperMCPServer`, which ignores a batch line
+rather than executing it the way a real server on protocol `2024-11-05` would —
+so the tests prove the *gateway* refuses the batch, not what a real server would
+have done with one had it arrived. The refusal is the property that matters here,
+but the asymmetry is real and is the first thing to close if an L3 session is run.
 
 **Gap to close:** the malformed-input, oversized-message, and crashed-subprocess
-cases are the highest-value additions here — they're exactly the kind of thing
+cases remain the highest-value additions — they're exactly the kind of thing
 that's easy to get wrong silently in a proxy, and L1 already has the harness
-(`TestHelperMCPServer`-style helper processes) to add them cheaply.
+(`TestHelperMCPServer`-style helper processes) to add them cheaply. The
+malformed-JSON row above is now partly covered as a side effect: `isJSONArray`
+splits an unparseable line from a batch, and `TestIsJSONArray` pins that a bare
+number, a bare string and outright garbage all still take the forward-blind
+path.
 
 ### L5 — Smoke tests
 
@@ -377,7 +400,11 @@ client), which is not in v0.
    (0% → 94.2%): flag parsing, exit codes, and `verify` outcomes are covered.
 2. **Adversarial cases for the proxy (L4).** Malformed JSON, oversized message,
    crashed subprocess — the harness already exists, these are incremental
-   additions.
+   additions. *Partly done 2026-09-22:* the security review that produced
+   `v0.3.2` and `v0.3.3` added the batch, id-reuse and CSRF cases to §L4, which
+   is this item's highest-value half arriving through a review rather than a
+   planned test sprint. Oversized message and crashed subprocess are still open,
+   and are now the remainder of this item.
 3. **Black-box binary test (L2).** Turns last session's manual PowerShell smoke
    check into a repeatable, CI-covered test.
 4. **E2E against a real MCP server (L3).** Lowest leverage for now — stays

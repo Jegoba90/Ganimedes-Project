@@ -7,6 +7,69 @@
 
 ## Open
 
+### TD-5 — `idKey` treats `1` and `1.0` as different request ids
+
+- **Area:** `internal/proxy` (`idKey`, and the collision check in
+  `pending.remember` that depends on it).
+- **Trigger:** the 2026-09-22 security review, which closed the id-reuse gap
+  that let two overlapping calls corrupt each other's audit entry
+  (`DESIGN.md` §7, "Refusing what the gateway cannot judge"). Writing the fix
+  surfaced a narrower case it does not cover.
+- **The gap:** `idKey` is `string(bytes.TrimSpace(id))` — the raw JSON bytes of
+  the id. That deliberately keeps a numeric `1` distinct from a string `"1"`,
+  which is correct. It also makes `1` and `1.0` distinct, which JSON does not:
+  they are the same number. A client sending both would get two pending entries
+  where the collision check should have seen one.
+- **Why it is narrow:** the worst outcome is a *missing* audit entry, not a
+  misattributed one, and only against a wrapped server that normalises ids when
+  it answers (echoing `1` for a request sent as `1.0`). A server that echoes the
+  id verbatim, which is the common behavior, correlates both correctly.
+- **Considered and not chosen:** canonicalising numeric ids before keying (parse
+  as a number, re-emit per RFC 8785 the way `internal/audit` already does for the
+  log). It is real work in the hot path of every call, for a case that requires
+  both an adversarial client and a normalising server. Reach for it if either
+  half is ever observed.
+- **Logged:** 2026-09-22.
+
+### TD-6 — The approval server bounds its headers but not its body or its total read
+
+- **Area:** `internal/approval` (`Start`, `handleDecision`).
+- **Trigger:** the 2026-09-22 security review, as a low-severity finding
+  alongside the CSRF gap that `v0.3.2` closed.
+- **The gap:** `http.Server` is built with `ReadHeaderTimeout` (added for gosec
+  G112) but no `ReadTimeout` and no `MaxBytesReader` on the decision form, so a
+  client that sends headers promptly and then dribbles a body can hold a
+  connection, and `ParseForm` will read whatever body arrives.
+- **Why it is low:** the page binds to loopback only (Art. 2.2), so reaching it
+  already requires the local access that the "no authentication on the approval
+  page" limitation accepts. The harm is a stalled approval page, not a decision
+  made by anyone.
+- **The fix, when it is worth doing:** a `ReadTimeout` on the server and a
+  `MaxBytesReader` around the decision body. Both are one line each; this is
+  deferred for priority, not for difficulty.
+- **Logged:** 2026-09-22.
+
+### TD-7 — GitHub Actions are pinned by tag, not by commit SHA
+
+- **Area:** `.github/workflows/ci.yml`, `.github/workflows/release.yml`.
+- **Trigger:** the 2026-09-22 security review.
+- **The gap:** every action except `aquasecurity/trivy-action` is referenced by a
+  moving tag (`actions/checkout@v4`, `actions/setup-go@v5`,
+  `actions/attest-build-provenance@v4`, and the rest). A tag can be repointed by
+  whoever controls the action's repository, so a compromise there lands code in a
+  workflow that has `contents: write`, `id-token: write` and
+  `attestations: write` — the job that signs and publishes the binaries.
+- **Why it is deferred:** it is a supply-chain risk in the *build* pipeline, not
+  in the binary a user runs, and it requires compromising a first-party GitHub
+  action. The inconsistency is worth noting on its own: `trivy-action` is already
+  pinned by SHA, so the practice exists here and simply was not applied
+  throughout.
+- **The fix:** pin each action to a full commit SHA with the version in a
+  trailing comment (the shape `trivy-action` already uses) and let Dependabot
+  raise the bumps, which needs `.github/dependabot.yml` for the
+  `github-actions` ecosystem.
+- **Logged:** 2026-09-22.
+
 ### TD-2 — Real-world incident to inform the policy engine and threat model (M3+)
 
 - **Area:** `internal/policy` (shipped in v0: deny-list and approval-list, both

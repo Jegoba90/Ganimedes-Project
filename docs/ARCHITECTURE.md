@@ -157,6 +157,20 @@ different goroutines. They are matched by JSON-RPC `id` through a small
 mutex-guarded map: the request side stores `{id -> tool, args}`, the response
 side takes it back out when a matching `id` returns.
 
+**An occupied id is refused, not overwritten (since v0.3.3).** If a second call
+arrives on an id that is still waiting, storing it would evict the first, and
+then whichever response came back would be logged under the wrong tool while the
+other call finished with no entry at all. The wire cannot say which of two
+responses to one id belongs to which request, so `remember` reports the
+collision and the caller blocks the second call rather than guessing — including
+a call a human has already approved, because the approval is about the call and
+not about whether the record of it can be trusted. The entry is cleared only by
+its response, so an unanswered call holds its id for the session; there is no
+expiry, because a timeout short enough to free a stuck id also frees one whose
+response is merely slow, which is the failure this closes. One narrower gap
+stays open: `idKey` compares raw id bytes, so `1` and `1.0` are distinct keys
+though JSON calls them one number ([`TECH_DEBT.md`](TECH_DEBT.md) TD-5).
+
 In milestone 2 the append only ever happened on the **response** side, so all
 audit writes came from one goroutine and the hash chain was serialized for free
 — this is what resolved §2's forward note. `audit.Logger` still takes a mutex
@@ -286,11 +300,24 @@ The block happens on the **request** direction, before forwarding:
   — no interleaving. This is the Art. 3.2 concurrency guarantee; `-race` proves
   it.
 - **Wire transparency (Art. 1.3) is preserved for everything not blocked.** The
-  deny error is the single message on the client stream that Ganimedes authors
-  rather than forwards, and it is exactly the documented policy exception ("except
+  deny error is the message on the client stream that Ganimedes authors rather
+  than forwards, and it is exactly the documented policy exception ("except
   where a policy deliberately blocks or pauses a call"). A blocked request is
   never forwarded, so the server's view stays consistent (it never sees the call
-  and never answers it).
+  and never answers it). Since v0.3.3 two more shapes take that same path, for
+  the same reason — the gateway cannot judge them, so it refuses rather than
+  waves them through:
+  - **A JSON-RPC batch** (a line holding a top-level array). The single-message
+    unmarshal cannot parse one, and the old fallback forwarded anything it
+    could not read, so a `tools/call` inside an array reached the server with
+    no policy check and no audit entry at all. `isJSONArray` now separates a
+    batch from genuine garbage, and `blockBatch` refuses the whole line: one
+    error per id, returned as an array so a client still correlates it, and
+    the raw batch recorded verbatim in the audit entry under the synthetic
+    tool name `(batch)`. Deciding its elements individually would mean building
+    batch semantics (split, judge, re-encode, recombine) for a wire form the
+    MCP spec retired in `2025-06-18`.
+  - **A reused request id**, per the correlation note in §4 above.
 - **Audit from both directions.** A denied call is appended with `decision=deny`
   from the request goroutine (there is no server response to wait for); allowed
   calls are still appended from the response goroutine. The `audit.Logger` mutex
@@ -369,7 +396,24 @@ JSON-RPC framing or the audit format.
   names/args cannot inject script) and `POST /decision` (approve/reject).
   `Request(tool, args)` registers a pending call, blocks on a per-call buffered
   channel, and returns `Approved`, `Rejected`, or `TimedOut` (the fail-closed zero
-  value). Stdlib only: `net/http`, `html/template`, `sync`, `time`.
+  value). Stdlib only: `net/http`, `html/template`, `sync`, `time`,
+  `crypto/rand`, `crypto/subtle`.
+- **A decision has to come from the page itself (since v0.3.2).** `New` generates
+  a random 32-byte token per run and every rendered form carries it in a hidden
+  field; `POST /decision` checks it with `subtle.ConstantTimeCompare` before it
+  looks at the id or the action, and answers `403` otherwise. Without that, any
+  page open in the same browser could point a plain HTML form at `/decision` and
+  decide a held call — a cross-origin form POST needs no preflight and no cookie,
+  so nothing stopped it. The Same-Origin Policy is what makes the token work: the
+  attacking page can send the request but cannot read the page Ganimedes served,
+  so it cannot learn the value to include. This proves the request came from this
+  page, which is not the same as proving who sent it: the page still has no
+  authentication, by design (Art. 2.4, and `SECURITY.md`).
+- **Pending ids are random, not a counter (since v0.3.2).** They were `1, 2, 3…`,
+  which made a decision POST guessable without ever reading the page. They are
+  now 16 random bytes. Because a random id no longer doubles as arrival order,
+  `handleIndex` sorts the page by each pending call's timestamp instead, so the
+  longest-waiting call still leads the list.
 - **`internal/policy`** grew a third verdict, `RequireApproval`, and an
   `approve` set alongside `deny`. `Decide` checks deny first, so a tool on both
   lists is denied (the stricter verdict). Everything else is unchanged and still

@@ -56,6 +56,13 @@ Anything that breaks a guarantee the docs actually make:
 - An altered audit log that `ganimedes verify` still accepts: a forged hash
   chain, a forged Ed25519 signature, or a canonicalisation gap that lets two
   different payloads hash the same.
+- An audit entry that was written wrong in the first place: a call that reached
+  the server and left no entry, or one recorded under a tool name, arguments or
+  decision that were not its own. The line above covers attacks on the record
+  after the fact and quietly assumes the writing of it is faithful; this line
+  exists because that assumption failed once already (the reused request id
+  fixed in `v0.3.3`), and a log that is sealed honestly around a false statement
+  is one `verify` will call intact forever.
 - The approval page deciding without a human: a call approved by something other
   than a click, a cross-site request that decides for you, or script injected
   through tool arguments rendered on that page.
@@ -75,7 +82,26 @@ wrong:
 
 - **The approval page has no authentication.** It binds to loopback, and anyone
   with local access to that port can approve or reject. That is the v0 design,
-  stated in the README.
+  stated in the README. What it does have, since `v0.3.2`, is a CSRF token: a
+  decision POST must carry the random value embedded in the page Ganimedes
+  rendered, which a page from another origin cannot read and therefore cannot
+  forge. That closes the cross-site case listed in scope above; it does not
+  close this one, because anyone who can load the page can also read the token
+  it carries. The two are different attackers and only one of them is accepted.
+- **JSON-RPC batching is refused, not supported.** A request line holding an
+  array rather than a single object is blocked whole, with one error returned
+  per id in it. The policy engine and the audit log both work one call at a
+  time, so a batch is something v0 cannot judge, and ambiguity fails closed
+  (Art. 2.1). Batching was removed from the MCP spec in `2025-06-18`; a client
+  still sending one gets a clear error rather than silent passage, which is
+  what `v0.3.3` changed.
+- **A call the server never answers holds its request id.** Pending entries are
+  cleared by their response, so an unanswered call keeps its id occupied for
+  the rest of the session and a later call reusing that id is refused too. No
+  expiry: a timeout short enough to free a stuck id would also free one whose
+  response is merely slow, which is the misattribution `v0.3.3` closed. Every
+  MCP client counts ids upward and never revisits one, so this costs nothing
+  in practice.
 - **The audit log holds secrets.** Entries store full arguments and results, so
   the log is as sensitive as the traffic that produced it (Art. 2.5). Redaction
   is a later feature.
