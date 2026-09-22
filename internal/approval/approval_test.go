@@ -9,40 +9,45 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-// idPattern scrapes the pending id out of the rendered page's hidden form field.
-var idPattern = regexp.MustCompile(`name="id" value="(\d+)"`)
+// idPattern scrapes the pending id out of the rendered page's hidden form
+// field. IDs are random hex (newPendingID), not decimal, since M4.1.
+var idPattern = regexp.MustCompile(`name="id" value="([0-9a-f]+)"`)
 
 // waitForPendingID polls the index page (via httptest, no socket) until a pending
 // call shows up and returns its id, failing the test if none appears in time.
-func waitForPendingID(t *testing.T, s *Server) uint64 {
+func waitForPendingID(t *testing.T, s *Server) string {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		rec := httptest.NewRecorder()
 		s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 		if m := idPattern.FindStringSubmatch(rec.Body.String()); m != nil {
-			id, err := strconv.ParseUint(m[1], 10, 64)
-			if err != nil {
-				t.Fatalf("scraped bad id %q: %v", m[1], err)
-			}
-			return id
+			return m[1]
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("no pending call appeared in time")
-	return 0
+	return ""
 }
 
-// postDecision drives handleDecision with a form POST, returning the recorder.
+// postDecision drives handleDecision with a form POST carrying the server's own
+// CSRF token, the way a click on the real page would. Returns the recorder.
 func postDecision(t *testing.T, s *Server, id, action string) *httptest.ResponseRecorder {
 	t.Helper()
-	form := url.Values{"id": {id}, "action": {action}}
+	return postDecisionWithToken(t, s, id, action, s.csrfToken)
+}
+
+// postDecisionWithToken is postDecision with an explicit (possibly wrong or
+// missing) CSRF token, for exercising the rejection path a forged cross-site
+// POST would take.
+func postDecisionWithToken(t *testing.T, s *Server, id, action, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	form := url.Values{"id": {id}, "action": {action}, "csrf_token": {token}}
 	req := httptest.NewRequest(http.MethodPost, "/decision", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -124,7 +129,7 @@ func TestRequest_Approved(t *testing.T) {
 		t.Errorf("page should show the held tool, got: %s", body)
 	}
 
-	rec := postDecision(t, s, strconv.FormatUint(id, 10), "approve")
+	rec := postDecision(t, s, id, "approve")
 	if rec.Code != http.StatusSeeOther {
 		t.Errorf("decision status = %d, want 303", rec.Code)
 	}
@@ -146,7 +151,7 @@ func TestRequest_Rejected(t *testing.T) {
 	go func() { outcome <- s.Request("payment.execute", json.RawMessage(`{"amount":100}`)) }()
 
 	id := waitForPendingID(t, s)
-	if rec := postDecision(t, s, strconv.FormatUint(id, 10), "reject"); rec.Code != http.StatusSeeOther {
+	if rec := postDecision(t, s, id, "reject"); rec.Code != http.StatusSeeOther {
 		t.Errorf("decision status = %d, want 303", rec.Code)
 	}
 	if got := <-outcome; got != Rejected {
@@ -201,17 +206,170 @@ func TestHandleDecision_Errors(t *testing.T) {
 		t.Errorf("GET /decision status = %d, want 405", rec.Code)
 	}
 
-	// Bad id and bad action are 400.
-	if rec := postDecision(t, s, "abc", "approve"); rec.Code != http.StatusBadRequest {
-		t.Errorf("bad id status = %d, want 400", rec.Code)
-	}
-	if rec := postDecision(t, s, "1", "maybe"); rec.Code != http.StatusBadRequest {
+	// Bad action is 400.
+	if rec := postDecision(t, s, "deadbeef", "maybe"); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad action status = %d, want 400", rec.Code)
 	}
 
-	// Unknown (but well-formed) id: resolve is a no-op, still a redirect.
-	if rec := postDecision(t, s, "99999", "approve"); rec.Code != http.StatusSeeOther {
+	// Unknown id (never issued, or a stale one from an earlier call): ids are
+	// opaque random strings, so there is no "malformed" shape to reject up
+	// front; resolve is simply a no-op and the request still redirects.
+	if rec := postDecision(t, s, "deadbeefdeadbeefdeadbeefdeadbeef", "approve"); rec.Code != http.StatusSeeOther {
 		t.Errorf("unknown-id status = %d, want 303", rec.Code)
+	}
+}
+
+// TestNew_CSRFToken checks New generates a token that looks like 32 random
+// bytes (64 lowercase hex chars) and that two servers do not share one: a
+// constant or predictable token would defeat the whole point of checking it.
+func TestNew_CSRFToken(t *testing.T) {
+	a, err := New("127.0.0.1:0", time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if len(a.csrfToken) != csrfTokenSize*2 {
+		t.Errorf("csrfToken length = %d, want %d hex chars", len(a.csrfToken), csrfTokenSize*2)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]+$`).MatchString(a.csrfToken) {
+		t.Errorf("csrfToken = %q, want lowercase hex", a.csrfToken)
+	}
+
+	b, err := New("127.0.0.1:0", time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if a.csrfToken == b.csrfToken {
+		t.Error("two servers got the same csrfToken, want independent random values")
+	}
+}
+
+// TestRequest_PendingIDsAreRandom checks that consecutive calls get
+// unpredictable ids, not the old 1, 2, 3... counter: a blind forged POST
+// should not be able to guess its way to a real pending id by incrementing.
+func TestRequest_PendingIDsAreRandom(t *testing.T) {
+	s, err := New("127.0.0.1:0", 2*time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var ids []string
+	for i := 0; i < 5; i++ {
+		go func() { s.Request("tool", nil) }()
+		ids = append(ids, waitForPendingID(t, s))
+		// Resolve it immediately so the next Request's id is scraped cleanly
+		// off an otherwise-empty page.
+		postDecision(t, s, ids[len(ids)-1], "reject")
+	}
+
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("id %q repeated across requests, want each unique", id)
+		}
+		seen[id] = true
+		if id == "1" || id == "2" || id == "3" || id == "4" || id == "5" {
+			t.Fatalf("id %q looks like the old sequential counter, want random", id)
+		}
+	}
+}
+
+// TestHandleIndex_OrdersByArrival checks that, now that ids no longer sort
+// into arrival order on their own, the page still lists the longest-waiting
+// call first (handleIndex sorts by the pending's timestamp, not its id).
+func TestHandleIndex_OrdersByArrival(t *testing.T) {
+	s, err := New("127.0.0.1:0", 2*time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	go func() { s.Request("first.tool", nil) }()
+	waitForPendingID(t, s)
+	time.Sleep(20 * time.Millisecond) // force a clearly later timestamp
+	go func() { s.Request("second.tool", nil) }()
+
+	// Poll until both are visible; waitForPendingID would return as soon as
+	// first.tool's own (already-present) id matches, without waiting for the
+	// second call to actually land.
+	deadline := time.Now().Add(2 * time.Second)
+	var body string
+	for time.Now().Before(deadline) {
+		body = indexBody(t, s)
+		if strings.Contains(body, "second.tool") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	firstAt := strings.Index(body, "first.tool")
+	secondAt := strings.Index(body, "second.tool")
+	if firstAt == -1 || secondAt == -1 {
+		t.Fatalf("expected both tools on the page, got: %s", body)
+	}
+	if firstAt > secondAt {
+		t.Errorf("first.tool (older) should be listed before second.tool (newer), got: %s", body)
+	}
+}
+
+// TestHandleIndex_CarriesCSRFToken checks the rendered form embeds the
+// server's token, since that is the only channel a legitimate click has to
+// prove it came from this page.
+func TestHandleIndex_CarriesCSRFToken(t *testing.T) {
+	s, err := New("127.0.0.1:0", 2*time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	go func() { s.Request("email.send", nil) }()
+	waitForPendingID(t, s)
+
+	body := indexBody(t, s)
+	if !strings.Contains(body, `name="csrf_token" value="`+s.csrfToken+`"`) {
+		t.Errorf("rendered page does not embed the server's CSRF token, got: %s", body)
+	}
+}
+
+// TestHandleDecision_CSRF is the attack this defends against: a POST to
+// /decision that never saw the real page (a forged cross-site request, or a
+// stale token from a previous run) must be refused, and the pending call must
+// stay pending, exactly as if the request had never arrived.
+func TestHandleDecision_CSRF(t *testing.T) {
+	s, err := New("127.0.0.1:0", 2*time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	outcome := make(chan Outcome, 1)
+	go func() { outcome <- s.Request("payment.execute", json.RawMessage(`{"amount":100}`)) }()
+	id := waitForPendingID(t, s)
+
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"wrong token", "0000000000000000000000000000000000000000000000000000000000000000"},
+		{"empty token", ""},
+		{"truncated real token", s.csrfToken[:len(s.csrfToken)-1]},
+	} {
+		rec := postDecisionWithToken(t, s, id, "approve", tc.token)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want 403", tc.name, rec.Code)
+		}
+	}
+
+	// None of the forged attempts should have resolved the call: it must still
+	// be sitting on the page, unresolved, waiting for the real decision.
+	select {
+	case got := <-outcome:
+		t.Fatalf("Request resolved to %v from a forged POST, want it still pending", got)
+	default:
+	}
+	if body := indexBody(t, s); !strings.Contains(body, "payment.execute") {
+		t.Errorf("call should still be pending after forged POSTs, got: %s", body)
+	}
+
+	// The real token still works, proving the 403s above were specifically
+	// about the token and not some other breakage.
+	if rec := postDecision(t, s, id, "approve"); rec.Code != http.StatusSeeOther {
+		t.Errorf("decision with real token status = %d, want 303", rec.Code)
+	}
+	if got := <-outcome; got != Approved {
+		t.Errorf("Request outcome = %v, want Approved", got)
 	}
 }
 

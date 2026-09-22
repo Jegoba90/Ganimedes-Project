@@ -13,18 +13,30 @@
 // address only; New rejects any non-loopback host. There is no authentication in
 // v0, so anyone who can reach the port on this machine can approve or reject; that
 // is a documented limitation (Art. 2.4), acceptable for a local developer tool.
+//
+// That limitation is about someone who can already reach and read the page. A
+// different attacker needs neither: a hostile page open in the same browser,
+// anywhere, can point a plain HTML form at /decision and approve or reject a
+// pending call the human never saw (SECURITY.md lists this in scope: "a
+// cross-site request that decides for you"). Every decision POST must therefore
+// carry the random token New generates for that run, embedded as a hidden field
+// in the page Ganimedes rendered. A cross-origin page cannot read that token
+// under the browser's Same-Origin Policy, so it cannot forge a valid one; a
+// human clicking a button on the real page always can.
 package approval
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -61,7 +73,7 @@ func (o Outcome) String() string {
 // human decision delivered by resolve never blocks, even if Request has already
 // stopped waiting (a timeout that fired at the same instant).
 type pending struct {
-	id   uint64
+	id   string
 	tool string
 	args json.RawMessage
 	seen time.Time
@@ -78,9 +90,56 @@ type Server struct {
 	httpSrv *http.Server
 	url     string
 
+	// csrfToken is a random, unguessable value generated once by New and
+	// embedded as a hidden field in every rendered form (see pageHTML).
+	// handleDecision refuses a POST that does not carry it back, which is what
+	// stops a page from a different origin from forging a decision: it cannot
+	// read this value, so it cannot include it (see the package doc comment).
+	csrfToken string
+
 	mu       sync.Mutex
-	nextID   uint64
-	pendings map[uint64]*pending
+	pendings map[string]*pending
+}
+
+// csrfTokenSize is the length, in bytes, of the random CSRF token. 32 bytes
+// (256 bits) makes guessing it irrelevant; the actual defense is that a
+// cross-origin page cannot read a same-origin response, not the token's length.
+const csrfTokenSize = 32
+
+// newCSRFToken returns a random hex-encoded token. Unlike audit.NewSession's
+// label, this value is a real security control, so a failure to read the system
+// RNG is returned as an error rather than papered over with a weaker fallback: a
+// predictable token would silently defeat the protection it exists to provide
+// (Constitution Art. 2.1, fail closed rather than degrade quietly).
+func newCSRFToken() (string, error) {
+	b := make([]byte, csrfTokenSize)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("reading random bytes: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// pendingIDSize is the length, in bytes, of one pending call's id. IDs used to
+// be a plain counter (1, 2, 3...), which made a decision POST guessable
+// without ever reading the page: a form for id=1 through id=30 covers
+// whatever is pending in most runs. The CSRF token above is what actually
+// stops a forged decision from being accepted, but there is no reason for the
+// id to keep handing an attacker a free hint on top of that, so it is now
+// random too. 16 bytes (128 bits) is the same order of randomness as a UUIDv4.
+const pendingIDSize = 16
+
+// newPendingID returns a random hex-encoded id for one pending approval. Like
+// audit.NewSession's session label and unlike newCSRFToken, this id is not
+// itself a security boundary — the CSRF token is — so a failure of the system
+// RNG (all but impossible) falls back to a timestamp rather than refusing to
+// hold the call: losing the id's unpredictability is a minor regression, not
+// a broken guarantee, and Request has no error to report it through.
+func newPendingID() string {
+	var b [pendingIDSize]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("t%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // New builds an approval Server that will listen on addr (which must be a
@@ -97,10 +156,15 @@ func New(addr string, timeout time.Duration) (*Server, error) {
 	if timeout <= 0 {
 		return nil, fmt.Errorf("approval: timeout must be positive, got %s", timeout)
 	}
+	token, err := newCSRFToken()
+	if err != nil {
+		return nil, fmt.Errorf("approval: %w", err)
+	}
 	return &Server{
-		addr:     addr,
-		timeout:  timeout,
-		pendings: make(map[uint64]*pending),
+		addr:      addr,
+		timeout:   timeout,
+		csrfToken: token,
+		pendings:  make(map[string]*pending),
 	}, nil
 }
 
@@ -153,9 +217,7 @@ func (s *Server) URL() string { return s.url }
 // Art. 2.1). The pending entry is removed before Request returns, so the page
 // only ever shows calls still waiting.
 func (s *Server) Request(tool string, args json.RawMessage) Outcome {
-	s.mu.Lock()
-	s.nextID++
-	id := s.nextID
+	id := newPendingID()
 	p := &pending{
 		id:   id,
 		tool: tool,
@@ -163,6 +225,7 @@ func (s *Server) Request(tool string, args json.RawMessage) Outcome {
 		seen: time.Now(),
 		ch:   make(chan Outcome, 1),
 	}
+	s.mu.Lock()
 	s.pendings[id] = p
 	s.mu.Unlock()
 
@@ -188,7 +251,7 @@ func (s *Server) Request(tool string, args json.RawMessage) Outcome {
 // resolve delivers a decision to a waiting Request by pending id. It is a no-op
 // for an unknown id (already resolved, or timed out and removed), so a stray or
 // double click cannot panic or block.
-func (s *Server) resolve(id uint64, out Outcome) {
+func (s *Server) resolve(id string, out Outcome) {
 	s.mu.Lock()
 	p, ok := s.pendings[id]
 	if ok {
@@ -227,21 +290,31 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			Tool: p.tool,
 			Args: prettyJSON(p.args),
 			Age:  time.Since(p.seen).Truncate(time.Second).String(),
+			seen: p.seen,
 		})
 	}
 	s.mu.Unlock()
-	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	// IDs are random (newPendingID), so they no longer double as an arrival
+	// order the way the old counter did. Sort by the timestamp itself instead,
+	// oldest first, so the call that has been waiting longest still leads the
+	// page the way it always has.
+	sort.Slice(items, func(i, j int) bool { return items[i].seen.Before(items[j].seen) })
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Best-effort render: the template is static and validated at init, and the
 	// model holds only strings/ints, so Execute does not fail in practice; if the
 	// client disconnects mid-write there is nothing useful to do about it.
-	_ = pageTemplate.Execute(w, pageData{Items: items})
+	_ = pageTemplate.Execute(w, pageData{Items: items, CSRFToken: s.csrfToken})
 }
 
 // handleDecision resolves one pending approval from the page's form POST and
 // redirects back to the list. An unknown or already-resolved id is harmless
 // (resolve is a no-op), so a late click just returns to an updated page.
+//
+// The CSRF token is checked before anything else in the request is trusted: a
+// POST that does not carry the token this server embedded in its own page is
+// rejected outright, whatever id or action it names (see the package doc
+// comment and validToken).
 func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -251,11 +324,14 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	id, err := strconv.ParseUint(r.FormValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	if !validToken(r.FormValue("csrf_token"), s.csrfToken) {
+		http.Error(w, "missing or invalid CSRF token", http.StatusForbidden)
 		return
 	}
+	// IDs are opaque random strings (newPendingID), not a format to validate:
+	// an unknown one — malformed, stale, or simply never issued — is handled
+	// below by resolve, the same as any other id nobody is waiting on.
+	id := r.FormValue("id")
 	var out Outcome
 	switch r.FormValue("action") {
 	case "approve":
@@ -270,17 +346,30 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// pageData is the template model for the approval page.
-type pageData struct {
-	Items []pageItem
+// validToken reports whether got matches want, using a constant-time
+// comparison so a mistaken or forged token cannot be narrowed down one byte at
+// a time by timing the response. An empty got (the field was never sent, which
+// is what a cross-site form that never saw the page would produce) is rejected
+// like any other mismatch.
+func validToken(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
-// pageItem is one pending call as shown on the page.
+// pageData is the template model for the approval page.
+type pageData struct {
+	Items     []pageItem
+	CSRFToken string
+}
+
+// pageItem is one pending call as shown on the page. seen is unexported (the
+// template only ever sees ID/Tool/Args/Age): it exists purely as handleIndex's
+// sort key, now that ID itself is random and carries no ordering.
 type pageItem struct {
-	ID   uint64
+	ID   string
 	Tool string
 	Args string
 	Age  string
+	seen time.Time
 }
 
 // prettyJSON indents JSON arguments for display. Empty arguments render as a
@@ -327,6 +416,7 @@ const pageHTML = `<!doctype html>
 <body>
 <h1>Ganimedes - pending approvals</h1>
 {{if .Items}}
+{{$token := .CSRFToken}}
 {{range .Items}}
 <div class="call">
  <span class="age">waiting {{.Age}}</span>
@@ -334,6 +424,7 @@ const pageHTML = `<!doctype html>
  <pre>{{.Args}}</pre>
  <form method="post" action="/decision">
   <input type="hidden" name="id" value="{{.ID}}">
+  <input type="hidden" name="csrf_token" value="{{$token}}">
   <button class="approve" name="action" value="approve">Approve</button>
   <button class="reject" name="action" value="reject">Reject</button>
  </form>
