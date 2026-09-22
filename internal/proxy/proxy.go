@@ -218,10 +218,17 @@ func pump(src io.Reader, dst io.Writer, handle func([]byte) bool, inspectFirst b
 //   - RequireApproval: the call is paused for a human (see handleApproval);
 //     approval forwards it, rejection or timeout blocks it like a deny.
 //   - Allow: forwarded verbatim, and remembered (when auditing) so its response
-//     can complete the audit entry on the other direction.
+//     can complete the audit entry on the other direction — unless this id is
+//     already waiting on another in-flight call, in which case it is refused
+//     like a deny instead of overwriting that call's pending entry (see
+//     pending.remember and idReuseMessage).
 //
 // Every other message — another method, or anything that is not JSON we
-// understand — is forwarded verbatim and not audited.
+// understand — is forwarded verbatim and not audited. One shape is a deliberate
+// exception to that: a JSON-RPC batch (a line that is a top-level array instead
+// of an object) is refused outright rather than forwarded, because a tools/call
+// hidden inside one would otherwise reach the server with no policy check and no
+// audit record — see blockBatch.
 //
 // A write or audit failure on a block path is reported to stderr and swallowed:
 // the call is still blocked (fail-closed, Constitution Art. 2.1) and the proxy
@@ -236,6 +243,9 @@ func handleRequest(line []byte, eng *policy.Engine, p *pending, appr Approver, l
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(line, &msg); err != nil {
+		if isJSONArray(line) {
+			return blockBatch(client, log, line)
+		}
 		return true // not JSON we can read; forward verbatim, do not audit
 	}
 	// Only a correlated tools/call is in scope. A tools/call always carries an id
@@ -253,9 +263,11 @@ func handleRequest(line []byte, eng *policy.Engine, p *pending, appr Approver, l
 		return handleApproval(client, p, appr, log, msg.ID, tool, args)
 	default: // policy.Allow
 		// Remember it so recordResponse can complete the entry when the server
-		// answers. Only needed when auditing.
-		if p != nil {
-			p.remember(msg.ID, tool, args, audit.DecisionAllow)
+		// answers. Only needed when auditing. remember reports false if this id
+		// is already waiting on another in-flight call, which this call must not
+		// be allowed to silently overwrite (see idReuseMessage).
+		if p != nil && !p.remember(msg.ID, tool, args, audit.DecisionAllow) {
+			return blockCall(client, log, msg.ID, args, tool, audit.DecisionDeny, idReuseMessage(tool))
 		}
 		return true
 	}
@@ -273,8 +285,14 @@ func handleApproval(client io.Writer, p *pending, appr Approver, log *audit.Logg
 	}
 	switch appr.Request(tool, args) {
 	case approval.Approved:
-		if p != nil {
-			p.remember(id, tool, args, audit.DecisionApproved)
+		// A human said yes, but that does not settle whether this id can be
+		// trusted for correlation: if it collided with another in-flight call
+		// while the human was deciding, forwarding now would still produce an
+		// unaudited or misattributed entry. The approval stands on its own
+		// merits and does not override that (Art. 2.1: fails closed wherever
+		// there is still a live choice to make).
+		if p != nil && !p.remember(id, tool, args, audit.DecisionApproved) {
+			return blockCall(client, log, id, args, tool, audit.DecisionDeny, idReuseMessage(tool))
 		}
 		return true
 	case approval.Rejected:
@@ -300,6 +318,101 @@ func blockCall(client io.Writer, log *audit.Logger, id, args json.RawMessage, to
 		}
 	}
 	return false // blocked: the real server never sees this call
+}
+
+// isJSONArray reports whether line is a syntactically valid JSON array. It is
+// only ever called after the single-message struct unmarshal in handleRequest
+// has already failed, to tell a genuine JSON-RPC batch (which parses as an
+// array) apart from a line that is not usable JSON at all (which parses as
+// neither), since the two need opposite treatment: a batch is refused, garbage
+// is forwarded blind exactly as before.
+func isJSONArray(line []byte) bool {
+	var probe []json.RawMessage
+	return json.Unmarshal(line, &probe) == nil
+}
+
+// blockBatch refuses an entire JSON-RPC batch request outright. v0's policy
+// engine and audit log both work one tools/call at a time (Decide, Append), so
+// there is no way to inspect a batch's elements individually; forwarding one
+// verbatim, the previous behavior, meant anything it carried reached the real
+// server with no policy check and no audit record at all, regardless of what
+// deny or approval rules were configured. That is a hole in the two pillars
+// this project is sold on, not a missing feature, so it is closed the same way
+// any other ambiguous call is (Art. 2.1: fails closed): the whole batch is
+// blocked rather than silently allowed, or silently split and re-encoded
+// (new, untested surface this proxy does not otherwise have, for a wire form
+// the MCP spec itself removed in 2025-06-18). Every id found in the batch gets
+// its own JSON-RPC error so a spec-compliant client can still correlate the
+// refusal, and the raw batch is captured verbatim in the audit entry (when
+// auditing) so a reviewer can see exactly what was attempted.
+func blockBatch(client io.Writer, log *audit.Logger, line []byte) (forward bool) {
+	if err := writeBatchRefusal(client, batchIDs(line)); err != nil {
+		fmt.Fprintf(os.Stderr, "ganimedes: writing batch refusal failed: %v\n", err)
+	}
+	if log != nil {
+		if _, err := log.Append(batchTool, json.RawMessage(line), nil, policyErrorObject(batchMessage), audit.DecisionDeny); err != nil {
+			fmt.Fprintf(os.Stderr, "ganimedes: audit append failed: %v\n", err)
+		}
+	}
+	return false // blocked: the real server never sees any part of this batch
+}
+
+// batchTool is the synthetic tool name a refused batch is recorded under: not
+// a real tool, but the audit format requires one (checkShape rejects a tool
+// call entry without it), and this name reads unambiguously as what it is.
+const batchTool = "(batch)"
+
+// batchMessage is the reason given for refusing a JSON-RPC batch, both to the
+// client and in the audit log.
+const batchMessage = "blocked by Ganimedes: JSON-RPC batch requests are not supported; send each tools/call as its own message"
+
+// batchIDs extracts the id of every element in a JSON-RPC batch that has one.
+// A batch may mix requests (which expect a response) with notifications
+// (which do not, and carry no id); only the former get an error back, which is
+// what a spec-compliant client already expects for any batch response. Elements
+// that are not themselves valid JSON, or that carry no id, are skipped rather
+// than aborting the whole extraction: a best-effort list of the ids that can be
+// answered is more useful than none at all.
+func batchIDs(line []byte) []json.RawMessage {
+	var elems []json.RawMessage
+	if err := json.Unmarshal(line, &elems); err != nil {
+		return nil
+	}
+	ids := make([]json.RawMessage, 0, len(elems))
+	for _, e := range elems {
+		var withID struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if json.Unmarshal(e, &withID) == nil && len(withID.ID) > 0 {
+			ids = append(ids, withID.ID)
+		}
+	}
+	return ids
+}
+
+// writeBatchRefusal writes the response to a refused batch: one JSON-RPC error
+// object per id in ids, sent back as a single JSON array, mirroring the shape
+// of the batch that was refused so a client correlates each error the way it
+// would any other batch response. If no id could be recovered at all (a batch
+// that was not, itself, parseable element by element), a single ordinary error
+// with a null id is sent instead, so the client still receives an answer.
+func writeBatchRefusal(client io.Writer, ids []json.RawMessage) error {
+	if len(ids) == 0 {
+		return writePolicyError(client, json.RawMessage("null"), batchMessage)
+	}
+	resp := make([]rpcErrorResponse, len(ids))
+	for i, id := range ids {
+		resp[i] = rpcErrorResponse{JSONRPC: "2.0", ID: id, Error: rpcErrorBody{Code: policyCode, Message: batchMessage}}
+	}
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("encoding batch refusal: %w", err)
+	}
+	b = append(b, '\n')
+	if _, err := client.Write(b); err != nil {
+		return fmt.Errorf("writing batch refusal: %w", err)
+	}
+	return nil
 }
 
 // policyCode is the JSON-RPC error code returned for any policy block (deny,
@@ -346,6 +459,19 @@ func noApproverMessage(tool string) string {
 	return fmt.Sprintf("blocked by Ganimedes: tool %q requires approval but no approver is configured", tool)
 }
 
+// idReuseMessage is the fail-closed reason when a tools/call's JSON-RPC id is
+// already waiting on a response for another in-flight call. Two overlapping
+// calls sharing one id cannot both be correlated to their own response — the
+// wire gives no way to tell which response belongs to which — so accepting
+// the second would silently overwrite the first's pending entry (see
+// pending.remember): whichever response arrives first would be logged under
+// the wrong tool, and the other call would complete with no audit record at
+// all. A well-behaved MCP client never reuses an id before it is answered;
+// this is refused rather than resolved by guessing.
+func idReuseMessage(tool string) string {
+	return fmt.Sprintf("blocked by Ganimedes: tool %q reused a request id that is still waiting on a response; JSON-RPC ids must stay unique until answered", tool)
+}
+
 // rpcErrorBody is the "error" member of a JSON-RPC error response.
 type rpcErrorBody struct {
 	Code    int    `json:"code"`
@@ -364,20 +490,21 @@ func policyErrorObject(message string) json.RawMessage {
 	return b
 }
 
+// rpcErrorResponse is a complete JSON-RPC error response: what the client gets
+// back for one blocked call. writeBatchRefusal reuses the same shape to answer
+// a batch, one of these per id, sent back as an array.
+type rpcErrorResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Error   rpcErrorBody    `json:"error"`
+}
+
 // writePolicyError writes a complete JSON-RPC error response for a blocked call
 // to the client. Marshaling (rather than string formatting) guarantees valid
 // JSON and correct escaping of the message. The id is echoed verbatim so the
 // client can correlate the error with its request.
 func writePolicyError(client io.Writer, id json.RawMessage, message string) error {
-	resp := struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Error   rpcErrorBody    `json:"error"`
-	}{
-		JSONRPC: "2.0",
-		ID:      id,
-		Error:   rpcErrorBody{Code: policyCode, Message: message},
-	}
+	resp := rpcErrorResponse{JSONRPC: "2.0", ID: id, Error: rpcErrorBody{Code: policyCode, Message: message}}
 	b, err := json.Marshal(resp)
 	if err != nil {
 		return fmt.Errorf("encoding policy error response: %w", err)
@@ -430,10 +557,34 @@ func newPending() *pending {
 // remember stores a cleared tools/call keyed by its id so the matching response
 // can complete it on the other direction. decision is the verdict that cleared it
 // (allow or approved), carried through to the audit entry.
-func (p *pending) remember(id json.RawMessage, tool string, args json.RawMessage, decision string) {
+//
+// It reports false, and stores nothing, if id already has an entry: that means
+// another call sharing the same JSON-RPC id is still in flight, waiting on its
+// own response, and a second entry under the same key would silently overwrite
+// the first rather than queue behind it — there is no way to tell, from the
+// wire alone, which of two responses to the same id belongs to which request,
+// so the caller must refuse the second call rather than guess. Once the first
+// call's response arrives (recordResponse deletes the entry), the id is free
+// again and an unrelated later call may reuse it without issue: only
+// overlapping use is ambiguous.
+//
+// The cost of that, stated rather than hidden: an entry is only ever cleared
+// by its response, so a call the server never answers holds its id for the
+// rest of the session, and a later call reusing that id is refused too. No
+// expiry is used because a TTL short enough to release a stuck id is also
+// short enough to release one whose response is merely slow, which would put
+// the misattribution this guards against back on the table. In practice every
+// MCP client counts ids upward and never revisits one, so a held id costs
+// nothing; a client that cycles ids would lose one slot per unanswered call.
+func (p *pending) remember(id json.RawMessage, tool string, args json.RawMessage, decision string) bool {
 	p.mu.Lock()
-	p.calls[idKey(id)] = pendingCall{tool: tool, args: args, decision: decision}
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	key := idKey(id)
+	if _, inFlight := p.calls[key]; inFlight {
+		return false
+	}
+	p.calls[key] = pendingCall{tool: tool, args: args, decision: decision}
+	return true
 }
 
 // recordResponse inspects one server->client message. If its id matches a

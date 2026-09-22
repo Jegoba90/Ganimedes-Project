@@ -15,6 +15,7 @@ import (
 	"github.com/Jegoba90/Ganimedes-Project/internal/approval"
 	"github.com/Jegoba90/Ganimedes-Project/internal/audit"
 	"github.com/Jegoba90/Ganimedes-Project/internal/config"
+	"github.com/Jegoba90/Ganimedes-Project/internal/policy"
 )
 
 // fakeApprover is a test Approver that returns a fixed outcome and records what
@@ -432,6 +433,81 @@ func TestTimeoutMessage(t *testing.T) {
 	}
 }
 
+// TestIsJSONArray pins the discrimination handleRequest relies on: a batch
+// (any syntactically valid JSON array, empty or not) must be told apart from
+// every other shape a line could fail the single-message parse for, since the
+// two get opposite treatment -- a batch is refused, anything else is still
+// forwarded blind exactly as before.
+func TestIsJSONArray(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"batch of one", `[{"jsonrpc":"2.0","id":1,"method":"tools/call"}]`, true},
+		{"empty array", `[]`, true},
+		{"single object", `{"jsonrpc":"2.0","id":1}`, false},
+		{"not json at all", `not json`, false},
+		{"bare number", `42`, false},
+		{"bare string", `"hello"`, false},
+	}
+	for _, c := range cases {
+		if got := isJSONArray([]byte(c.line)); got != c.want {
+			t.Errorf("isJSONArray(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestBatchIDs checks that only elements which are both parseable and carry an
+// id are recovered: a notification (no id) gets no reply under ordinary
+// JSON-RPC batch semantics either, and an element that is not even a JSON
+// object is skipped rather than aborting the whole extraction.
+func TestBatchIDs(t *testing.T) {
+	line := `[
+		{"jsonrpc":"2.0","id":1,"method":"tools/call"},
+		{"jsonrpc":"2.0","method":"notifications/progress"},
+		{"jsonrpc":"2.0","id":"two","method":"tools/call"},
+		"not an object"
+	]`
+	ids := batchIDs([]byte(line))
+	if len(ids) != 2 {
+		t.Fatalf("batchIDs = %d ids, want 2 (the notification and the malformed element skipped): %v", len(ids), ids)
+	}
+	if string(ids[0]) != "1" || string(ids[1]) != `"two"` {
+		t.Errorf("batchIDs = [%s %s], want [1 \"two\"]", ids[0], ids[1])
+	}
+}
+
+// TestWriteBatchRefusal checks both shapes writeBatchRefusal can send: an
+// array of errors mirroring a batch's ids, and the single-object fallback used
+// when no id could be recovered at all, so the client still gets an answer.
+func TestWriteBatchRefusal(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeBatchRefusal(&buf, nil); err != nil {
+		t.Fatalf("writeBatchRefusal with no ids: %v", err)
+	}
+	var single rpcErrorResponse
+	if err := json.Unmarshal(buf.Bytes(), &single); err != nil {
+		t.Fatalf("no-id fallback is not a single object: %v (%s)", err, buf.Bytes())
+	}
+	if string(single.ID) != "null" {
+		t.Errorf("no-id fallback id = %s, want null", single.ID)
+	}
+
+	buf.Reset()
+	ids := []json.RawMessage{json.RawMessage("1"), json.RawMessage(`"two"`)}
+	if err := writeBatchRefusal(&buf, ids); err != nil {
+		t.Fatalf("writeBatchRefusal with ids: %v", err)
+	}
+	var resp []rpcErrorResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not a JSON array: %v (%s)", err, buf.Bytes())
+	}
+	if len(resp) != 2 || string(resp[0].ID) != "1" || string(resp[1].ID) != `"two"` {
+		t.Errorf("writeBatchRefusal response = %+v, want ids [1 \"two\"]", resp)
+	}
+}
+
 // TestRun_ApprovalNilApproverFailsClosed: if a tool requires approval but no
 // approver is wired (a defensive case the CLI never produces), the call fails
 // closed to a denial rather than being allowed through.
@@ -458,6 +534,321 @@ func TestRun_ApprovalNilApproverFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(string(r.Error), "no approver") {
 		t.Errorf("id=3 error = %s, want it to mention the missing approver", r.Error)
+	}
+}
+
+// TestRun_RefusesJSONRPCBatch checks the fix for the most severe gap found in
+// this proxy: JSON-RPC 2.0 allows sending several messages as one line (a
+// top-level array, "batching"), and that line used to fail the proxy's
+// single-message parse and fall through to "not JSON we understand, forward
+// verbatim" -- so a tools/call hidden inside a batch reached the real server
+// with no policy check and no audit record at all, deny-list and
+// approval-list included. Batching is still legal on the wire for any client
+// or server on MCP protocol 2024-11-05 or 2025-03-26 (it was only removed
+// from the spec in 2025-06-18), so this was reachable, not theoretical.
+//
+// v0 has no way to judge a batch's elements individually (Decide and Append
+// both work one call at a time), so the fix refuses the whole batch rather
+// than forwarding it or splitting and re-judging it piecemeal. This proves
+// both halves. Both ids in the batch come back carrying an error and no
+// result, and an error for an id can only be ours, since TestHelperMCPServer
+// answers a tools/call with a result and nothing else — the same reasoning
+// TestRun_DeniesBlockedTool uses to show a blocked call never reached the
+// server. And the refusal keeps the batch's own shape, one error per id in a
+// single array, so a client can still correlate it.
+func TestRun_RefusesJSONRPCBatch(t *testing.T) {
+	t.Setenv("GO_WANT_MCP_SERVER", "1")
+
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	priv, pub := testKeypair(t)
+	log, err := audit.Open(logPath, "test-session", priv)
+	if err != nil {
+		t.Fatalf("audit.Open: %v", err)
+	}
+	defer log.Close() // idempotent; keeps an early t.Fatal from wedging TempDir cleanup
+
+	batch := []map[string]any{
+		{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "safe_tool", "arguments": map[string]any{}}},
+		{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": "dangerous_tool", "arguments": map[string]any{}}},
+	}
+	batchLine, err := json.Marshal(batch)
+	if err != nil {
+		t.Fatalf("marshal batch: %v", err)
+	}
+
+	// A batch on one line, then an ordinary call on the next: refusing the
+	// batch must not take the rest of the session down with it.
+	req := string(batchLine) + "\n" +
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"after_batch","arguments":{}}}` + "\n"
+	in := strings.NewReader(req)
+	var out bytes.Buffer
+
+	// Neither tool in the batch is on a deny-list here: the point is that the
+	// whole batch is refused unconditionally, without the policy engine ever
+	// being asked what it contains.
+	cfg := config.Config{Command: os.Args[0], Args: []string{"-test.run=TestHelperMCPServer"}}
+	if err := Run(cfg, in, &out, log, nil); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("log.Close: %v", err)
+	}
+
+	lines := bytes.Split(bytes.TrimSpace(out.Bytes()), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines back (the batch refusal, then id=3's own response), got %d: %s", len(lines), out.Bytes())
+	}
+
+	var batchResp []rpcResp
+	if err := json.Unmarshal(lines[0], &batchResp); err != nil {
+		t.Fatalf("first response line is not a JSON array: %v (%s)", err, lines[0])
+	}
+	if len(batchResp) != 2 {
+		t.Fatalf("batch refusal has %d entries, want 2 (one per id in the batch)", len(batchResp))
+	}
+	for i, want := range []string{"1", "2"} {
+		if got := string(bytes.TrimSpace(batchResp[i].ID)); got != want {
+			t.Errorf("batch refusal entry %d id = %q, want %q", i, got, want)
+		}
+		if batchResp[i].Error == nil || batchResp[i].Result != nil {
+			t.Errorf("batch refusal entry %d = %+v, want an error and no result", i, batchResp[i])
+		}
+		if !strings.Contains(string(batchResp[i].Error), "batch") {
+			t.Errorf("batch refusal entry %d error = %s, want it to mention the batch", i, batchResp[i].Error)
+		}
+	}
+
+	// The call after the batch went through normally: refusing a batch does
+	// not wedge the rest of the session.
+	var after rpcResp
+	if err := json.Unmarshal(lines[1], &after); err != nil {
+		t.Fatalf("second response line: %v (%s)", err, lines[1])
+	}
+	if string(bytes.TrimSpace(after.ID)) != "3" || after.Result == nil {
+		t.Errorf("after-batch response = %+v, want id=3 with a server result", after)
+	}
+
+	res, err := audit.Verify(logPath, pub)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	// One entry for the refused batch, one for the ordinary allowed call after it.
+	if !res.OK || res.Entries != 2 {
+		t.Fatalf("want 2 verified entries, got OK=%v entries=%d (%s)", res.OK, res.Entries, res.Reason)
+	}
+
+	entries := readEntries(t, logPath)
+	batchEntry := firstWithDecision(entries, "deny")
+	if batchEntry == nil || batchEntry.Tool != batchTool {
+		t.Fatalf("no deny entry with tool %q in the log: %+v", batchTool, entries)
+	}
+	// The raw batch is captured verbatim for forensics: both tool names inside
+	// it must be recoverable from the audit entry, even though neither call was
+	// individually judged.
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !bytes.Contains(raw, []byte("safe_tool")) || !bytes.Contains(raw, []byte("dangerous_tool")) {
+		t.Errorf("audit log does not capture what the refused batch contained: %s", raw)
+	}
+}
+
+// TestRun_RefusesBatchWithoutLog confirms the batch refusal does not depend on
+// auditing being on, the same guarantee TestRun_DeniesWithoutLog pins for an
+// ordinary deny. Deny carries an unrelated entry only to install handleReq
+// (Run stays a raw passthrough with no policy and no log at all), matching how
+// TestRun_DeniesWithoutLog is built.
+func TestRun_RefusesBatchWithoutLog(t *testing.T) {
+	t.Setenv("GO_WANT_MCP_SERVER", "1")
+
+	batchLine, err := json.Marshal([]map[string]any{
+		{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "anything"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal batch: %v", err)
+	}
+	in := strings.NewReader(string(batchLine) + "\n")
+	var out bytes.Buffer
+
+	cfg := config.Config{
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestHelperMCPServer"},
+		Deny:    []string{"irrelevant"},
+	}
+	if err := Run(cfg, in, &out, nil, nil); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if bytes.Contains(out.Bytes(), []byte(`"ok":true`)) {
+		t.Fatalf("batch reached the real server with no log configured; client got: %s", out.Bytes())
+	}
+	var resp []rpcErrorResponse
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil || len(resp) != 1 {
+		t.Fatalf("want a one-entry batch refusal array, got err=%v body=%s", err, out.Bytes())
+	}
+}
+
+// TestPending_Remember_RejectsCollision is the lowest-level test of the fix
+// for the audit-correlation bug an id collision used to cause: remember
+// silently overwrote an in-flight call's entry when a second call reused its
+// JSON-RPC id before the first got a response, so whichever response arrived
+// first was logged under the wrong tool and the other call left no audit
+// record at all. remember now refuses to store a second entry under a key
+// that is still occupied, and accepts it again once the first is cleared
+// (i.e. once its response has been recorded).
+func TestPending_Remember_RejectsCollision(t *testing.T) {
+	p := newPending()
+	id := json.RawMessage("1")
+
+	if ok := p.remember(id, "first_tool", nil, audit.DecisionAllow); !ok {
+		t.Fatal("first remember for a fresh id should succeed")
+	}
+	if ok := p.remember(id, "second_tool", nil, audit.DecisionAllow); ok {
+		t.Fatal("second remember for the same in-flight id should be refused")
+	}
+
+	// The refused attempt must not have touched the first call's entry.
+	p.mu.Lock()
+	call := p.calls[idKey(id)]
+	p.mu.Unlock()
+	if call.tool != "first_tool" {
+		t.Errorf("pending entry for id 1 = %+v, want it still holding first_tool", call)
+	}
+
+	// Once the first call's response is recorded, recordResponse deletes its
+	// entry and the id is free again: non-overlapping reuse is not ambiguous.
+	// The delete is done directly here so this stays a test of remember alone;
+	// TestHandleRequest_RejectsIDReuse drives the real recordResponse path.
+	p.mu.Lock()
+	delete(p.calls, idKey(id))
+	p.mu.Unlock()
+	if ok := p.remember(id, "third_tool", nil, audit.DecisionAllow); !ok {
+		t.Error("remember for an id whose earlier call already completed should succeed")
+	}
+}
+
+// TestHandleRequest_RejectsIDReuse calls handleRequest directly (bypassing
+// Run's concurrent goroutines) so the "still in flight" window is exact
+// rather than a race against a real subprocess's response. Two allowed calls
+// share one id; the second must be blocked, and the first must still
+// complete correctly under its own tool name once its response arrives,
+// proving the block protected the entry rather than corrupting it too.
+func TestHandleRequest_RejectsIDReuse(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	priv, pub := testKeypair(t)
+	log, err := audit.Open(logPath, "test-session", priv)
+	if err != nil {
+		t.Fatalf("audit.Open: %v", err)
+	}
+
+	// Close is idempotent, so the explicit Close below still reports a real
+	// failure; this one only keeps an early t.Fatal from leaving the file open,
+	// which on Windows makes TempDir cleanup fail and bury the actual error.
+	defer log.Close()
+
+	eng := policy.New(nil, nil) // default-allow: both calls clear policy
+	p := newPending()
+	var toClient bytes.Buffer
+
+	first := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"first_tool","arguments":{}}}` + "\n")
+	second := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"second_tool","arguments":{}}}` + "\n")
+
+	if fwd := handleRequest(first, eng, p, nil, log, &toClient); !fwd {
+		t.Fatal("first call with a fresh id should forward")
+	}
+	if fwd := handleRequest(second, eng, p, nil, log, &toClient); fwd {
+		t.Fatal("second call reusing an in-flight id should be blocked")
+	}
+	if !strings.Contains(toClient.String(), `"id":1`) || !strings.Contains(toClient.String(), "reused") {
+		t.Errorf("client did not get a policy error naming the reuse: %s", toClient.String())
+	}
+
+	// The first call's own response now arrives and must still complete
+	// correctly, attributed to first_tool.
+	p.recordResponse([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`+"\n"), log)
+	if err := log.Close(); err != nil {
+		t.Fatalf("log.Close: %v", err)
+	}
+
+	res, err := audit.Verify(logPath, pub)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !res.OK || res.Entries != 2 {
+		t.Fatalf("want 2 verified entries (the blocked reuse, the completed first call), got OK=%v entries=%d (%s)", res.OK, res.Entries, res.Reason)
+	}
+
+	entries := readEntries(t, logPath)
+	deny, allow := findByDecision(entries)
+	if deny == nil || deny.Tool != "second_tool" {
+		t.Errorf("deny entry = %+v, want tool=second_tool", deny)
+	}
+	if allow == nil || allow.Tool != "first_tool" || allow.Result == nil {
+		t.Errorf("allow entry = %+v, want tool=first_tool with a result", allow)
+	}
+}
+
+// TestHandleRequest_AllowsIDReuseAfterCompletion checks that only overlapping
+// reuse is refused: once a call's response has been recorded (its pending
+// entry cleared), a later call is free to reuse the same id without being
+// mistaken for a collision.
+func TestHandleRequest_AllowsIDReuseAfterCompletion(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	priv, _ := testKeypair(t)
+	log, err := audit.Open(logPath, "test-session", priv)
+	if err != nil {
+		t.Fatalf("audit.Open: %v", err)
+	}
+	defer log.Close()
+
+	eng := policy.New(nil, nil)
+	p := newPending()
+	var toClient bytes.Buffer
+
+	first := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"first_tool","arguments":{}}}` + "\n")
+	if fwd := handleRequest(first, eng, p, nil, log, &toClient); !fwd {
+		t.Fatal("first call should forward")
+	}
+	p.recordResponse([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`+"\n"), log)
+
+	second := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"second_tool","arguments":{}}}` + "\n")
+	if fwd := handleRequest(second, eng, p, nil, log, &toClient); !fwd {
+		t.Fatal("reusing an id whose earlier call already completed should forward, not be blocked")
+	}
+}
+
+// TestHandleApproval_RejectsIDReuse mirrors TestHandleRequest_RejectsIDReuse
+// for the approval path: even a call a human approved must not be forwarded
+// if its id collided with another in-flight call while the human was
+// deciding (Art. 2.1: fails closed wherever there is still a live choice).
+func TestHandleApproval_RejectsIDReuse(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	priv, _ := testKeypair(t)
+	log, err := audit.Open(logPath, "test-session", priv)
+	if err != nil {
+		t.Fatalf("audit.Open: %v", err)
+	}
+	defer log.Close()
+
+	p := newPending()
+	// Occupy id=1 first, the way an already-forwarded allowed call would.
+	if ok := p.remember(json.RawMessage("1"), "already_in_flight", nil, audit.DecisionAllow); !ok {
+		t.Fatal("setup: first remember should succeed")
+	}
+
+	var toClient bytes.Buffer
+	appr := &fakeApprover{outcome: approval.Approved}
+	if fwd := handleApproval(&toClient, p, appr, log, json.RawMessage("1"), "email.send", json.RawMessage(`{}`)); fwd {
+		t.Fatal("an approved call reusing an in-flight id should still be blocked")
+	}
+	if !strings.Contains(toClient.String(), "reused") {
+		t.Errorf("client did not get a policy error naming the reuse: %s", toClient.String())
+	}
+
+	deny := firstWithDecision(readEntries(t, logPath), "deny")
+	if deny == nil || deny.Tool != "email.send" {
+		t.Errorf("deny entry = %+v, want tool=email.send", deny)
 	}
 }
 
