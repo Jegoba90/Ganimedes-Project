@@ -14,20 +14,23 @@ It is **not a sandbox**. It governs what an agent does *through the server it
 wraps*. It does not isolate processes and does not stop an attacker who already
 controls the machine.
 
-## Install (one command, no placeholders)
+## Install
 
-With a Go toolchain — this is the path to prefer when scripting or automating,
-because it needs no version substitution and no `chmod`:
+With a Go toolchain, one command and nothing to substitute. This is the path to
+prefer when a script or an agent is doing the installing, because it needs no
+version substitution, no execute bit and no quarantine prompt:
 
 ```sh
 go install github.com/Jegoba90/Ganimedes-Project/cmd/ganimedes@latest
 ```
 
 Without Go, download the binary for the platform from the [latest
-release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest). The
-filenames carry a version (`ganimedes_v0.3.3_linux_amd64`); the README's install
-commands write it as `<version>` and it must be substituted with the one
-actually downloaded.
+release](https://github.com/Jegoba90/Ganimedes-Project/releases/latest).
+Filenames follow `ganimedes_vX.Y.Z_<os>_<arch>`, carrying the tag of the release
+they came from — no version is named here on purpose, because the one on that
+page is the one to use. The README's install commands write it as `<version>`,
+a placeholder to substitute, not a literal to paste. On Linux and macOS the
+downloaded file also needs `chmod +x`.
 
 ## Wrap a server
 
