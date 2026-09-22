@@ -216,7 +216,10 @@
      (`DESIGN.md` §7, 2026-07-24: real RFC 8785 canonical JSON + Ed25519
      signing) — will make Ganimedes' audit log the most rigorous of the three
      once implemented, since Airlock has none and MakerChecker's mechanism
-     isn't a transparent proxy at all.
+     isn't a transparent proxy at all. **Superseded as written: two more
+     entrants now advertise the same property, one with the same primitive.
+     See the 2026-09-22 review below — it was true of the three products
+     compared here, and is no longer true of the category.**
   - **What is not realistic:** competing on feature breadth (multi-backend,
     discovery, sandbox presets, HITL channel variety, dashboards) against
     Airlock specifically. That gap is large and Airlock is actively
@@ -272,4 +275,61 @@
   positioning decision, not an implementation task; it should inform (not be
   decided by) the M3 design. The audit-rigor half of this entry is no longer
   deferred — it was formalized as a decision in `DESIGN.md` §7 on 2026-07-24.
-- **Logged:** 2026-07-24.
+
+- **REVIEWED 2026-09-22 — the market moved, and one of the two differentiators
+  above is no longer exclusive.** The July reading was built from two
+  competitors reviewed in depth. The trigger for re-reading was narrower and
+  more practical: asking what it would take to get Ganimedes listed somewhere
+  an agent or a developer would find it. That surfaced
+  [`e2b-dev/awesome-mcp-gateways`](https://github.com/e2b-dev/awesome-mcp-gateways),
+  a directory of this exact category, and its contents are the update.
+  - **Scale.** That list tracks **42 gateways** (19 open-source, 23 commercial)
+    where July's analysis knew of two direct competitors. Microsoft, IBM,
+    Docker, Kong, Traefik and AWS have all shipped MCP gateways. This is no
+    longer a space with room to be early in.
+  - **All three v0 pillars are now claimed by somebody.** Tamper-evident
+    audit: **Wirken** (open-source) advertises a "per-session tamper-evident
+    audit log", and **KYDE Gateway** (commercial) advertises an
+    "**Ed25519-signed audit ledger**" — the same primitive this project chose
+    on 2026-07-24. Human-in-the-loop: **Peta** ships "HITL approvals".
+    Deterministic policy: **PolicyLayer** sells "deterministic rules to every
+    tool call, outside the LLM reasoning loop", which is close to this
+    project's own sentence.
+  - **What that does and does not mean, kept apart deliberately.** What is
+    established is that the *claim* of cryptographic tamper-evidence is no
+    longer unique. What is **not** established is whether the implementations
+    match: July's review of Airlock found "tamper-evident" marketing over
+    plain SQLite with no chain and no signing, which is exactly the gap worth
+    checking again here. Whether Wirken's log is chained, whether KYDE's
+    Ed25519 ledger is verifiable offline by a third party holding only a
+    public key, whether either canonicalises (RFC 8785) so two encodings of a
+    payload cannot hash differently — all unknown. These are one-line
+    directory descriptions, not code reviews. **The honest state: the
+    differentiator has gone from "unique" to "contested", and turning
+    "contested" back into a defensible claim requires reading their
+    implementations the way July read Airlock's.** That is the unfinished work
+    this bullet records.
+  - **What survives, and it is narrower than before.** The list is dominated by
+    Node, Docker, Kubernetes and enterprise control planes. A single static Go
+    binary with no dependencies, no runtime, no database, no account and no
+    network is close to absent from those 42, and the reasoning in `DESIGN.md`'s
+    Go decision log holds. The second survivor is not a feature: none of those
+    42 publishes its own list of accepted limitations the way `SECURITY.md` and
+    `GO_NO_GO.md` §6 do. That is unusual enough in a security category to be
+    worth treating as positioning rather than as housekeeping.
+  - **The listing question itself, answered.** The open-source section of that
+    list requires "**200 stars and 2 contributors or more**". Ganimedes has **0
+    stars and 1 contributor** (checked 2026-09-22, public since 2026-07-22). So
+    the directory is a *lagging* indicator: entering it requires the adoption
+    someone would enter it to find. Auto-generated rankings such as
+    `best-of-mcp-servers` crawl rather than accept submissions, so the GitHub
+    topics already set on the repo are the only lever that works today without
+    users.
+  - **What this does to the LatAm wedge: it raises it, not lowers it.** The
+    July case for it assumed feature and rigor differentiation was holding.
+    With the technical differentiators eroding and the category crowding at
+    this rate, a distribution wedge nobody else is working (Spanish-language
+    docs and support, Nerdearla as a concrete venue) stops being one of two
+    strategies and becomes the one that does not require out-shipping Microsoft
+    and IBM.
+- **Logged:** 2026-07-24. **Reviewed:** 2026-07-31, 2026-09-22.
