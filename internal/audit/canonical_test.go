@@ -135,3 +135,22 @@ func TestCanonicalize_RejectsOverflowNumber(t *testing.T) {
 		t.Fatal("canonicalizeJSON accepted an out-of-range number, want an error")
 	}
 }
+
+// A seal must never collapse two conflicting member values or invalid Unicode
+// to one interpretation. RFC 8785 requires rejection rather than lossy repair.
+func TestCanonicalize_RejectsAmbiguousJSON(t *testing.T) {
+	for _, raw := range []string{
+		`{"name":"allowed","name":"changed"}`,
+		`{"name":"allowed","\u006eame":"changed"}`,
+		`{"nested":[{"name":1,"name":2}]}`,
+		`{"name":"\ud800"}`,
+		"{\"name\":\"\xff\"}",
+		`{} {}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := canonicalizeJSON([]byte(raw)); err == nil {
+				t.Fatal("canonicalization accepted ambiguous JSON")
+			}
+		})
+	}
+}

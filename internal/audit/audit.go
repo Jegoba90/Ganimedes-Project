@@ -44,6 +44,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -67,9 +68,8 @@ const (
 const genesisHash = ""
 
 // Kind distinguishes the two things a log line can be. A tool call carries no
-// kind at all, which is deliberate: it keeps a call's bytes identical to what
-// every version before session headers wrote, so logs written by an older
-// Ganimedes still verify against this one.
+// kind at all, preserving the convention used before session headers. Older
+// records remain verifiable; new calls also carry the content_hash commitment.
 //
 // An unknown kind is not ignored. A verifier that cannot say what an entry
 // claims to be cannot vouch for it, so Verify refuses the whole log rather than
@@ -121,31 +121,32 @@ func (s *SessionInfo) normalize() {
 // What does change every hash is renaming a field, changing whether it is
 // omitted when empty, or changing the value that reaches it.
 type payload struct {
-	Seq      uint64          `json:"seq"`                    // 1-based position in this file
-	Time     string          `json:"ts"`                     // RFC3339 nanosecond UTC timestamp
-	Session  string          `json:"session"`                // groups entries from one proxy run
-	Kind     string          `json:"kind,omitempty"`         // KindSession on a header; absent on a tool call
-	Info     *SessionInfo    `json:"session_info,omitempty"` // present only on a session header
-	Tool     string          `json:"tool,omitempty"`         // the tools/call name
-	Args     json.RawMessage `json:"args,omitempty"`         // arguments, verbatim JSON from the wire
-	Result   json.RawMessage `json:"result,omitempty"`       // present on a successful call
-	Error    json.RawMessage `json:"error,omitempty"`        // present on a failed call
-	Decision string          `json:"decision,omitempty"`     // one of the Decision* constants
-	PrevHash string          `json:"prev_hash"`              // hash of the previous entry (chain link)
+	Seq         uint64          `json:"seq"`                    // 1-based position in this file
+	Time        string          `json:"ts"`                     // RFC3339 nanosecond UTC timestamp
+	Session     string          `json:"session"`                // groups entries from one proxy run
+	Kind        string          `json:"kind,omitempty"`         // KindSession on a header; absent on a tool call
+	Info        *SessionInfo    `json:"session_info,omitempty"` // present only on a session header
+	Tool        string          `json:"tool,omitempty"`         // the tools/call name
+	Args        json.RawMessage `json:"args,omitempty"`         // arguments as JSON, without decoding to Go values
+	Result      json.RawMessage `json:"result,omitempty"`       // present on a successful call
+	Error       json.RawMessage `json:"error,omitempty"`        // present on a failed call
+	ContentHash string          `json:"content_hash,omitempty"` // exact-number JSON commitment; absent in legacy calls
+	Decision    string          `json:"decision,omitempty"`     // one of the Decision* constants
+	PrevHash    string          `json:"prev_hash"`              // hash of the previous entry (chain link)
 }
 
 // checkShape reports whether an entry is one of the two things this format
 // defines, with the fields that kind requires and none that contradict it. It
-// runs after the hash and signature check, so reaching it means the entry was
-// genuinely written by the holder of the signing key: a failure here says the
-// log came from a version this build cannot judge, not that someone edited it.
+// runs before writing, and after the hash and signature check when verifying.
+// A signed record failing this check came from a version this build cannot
+// judge, rather than from an after-the-fact edit.
 func (p payload) checkShape() error {
 	switch p.Kind {
 	case KindSession:
 		if p.Info == nil {
 			return errors.New("session header without session_info")
 		}
-		if p.Tool != "" || len(p.Args) > 0 || len(p.Result) > 0 || len(p.Error) > 0 || p.Decision != "" {
+		if p.Tool != "" || len(p.Args) > 0 || len(p.Result) > 0 || len(p.Error) > 0 || p.Decision != "" || p.ContentHash != "" {
 			return errors.New("session header carrying tool-call fields")
 		}
 	case "":
@@ -154,6 +155,14 @@ func (p payload) checkShape() error {
 		}
 		if p.Decision == "" {
 			return errors.New("tool call without a decision")
+		}
+		switch p.Decision {
+		case DecisionAllow, DecisionDeny, DecisionApproved, DecisionRejected, DecisionTimeout:
+		default:
+			return fmt.Errorf("unknown tool-call decision %q", p.Decision)
+		}
+		if len(p.Result) > 0 && len(p.Error) > 0 {
+			return errors.New("tool call carrying both result and error")
 		}
 		if p.Info != nil {
 			return errors.New("tool call carrying session_info")
@@ -170,10 +179,10 @@ func (p payload) checkShape() error {
 // line (JSONL). Both kinds sit in the same chain, so the header is as
 // tamper-evident as the calls it introduces.
 //
-// Args, Result, and Error are kept as json.RawMessage so the exact JSON that
-// crossed the wire is preserved rather than being decoded and re-encoded through
-// Go types (which could drop or reshape fields). The verbatim bytes stay in the
-// file; canonicalization (below) is applied only when computing the seal.
+// Args, Result, and Error are kept as json.RawMessage so their JSON content is
+// preserved without decoding into Go values that could drop or reshape fields.
+// The enclosing JSON encoder compacts whitespace and may escape HTML-sensitive
+// characters; this file is a record of JSON content, not a copy of wire bytes.
 type Entry struct {
 	payload
 	Hash string `json:"hash"`
@@ -186,7 +195,7 @@ type Entry struct {
 // them, so writer and verifier agree by construction (Constitution Art. 2.3).
 //
 // The payload is marshaled with the standard encoder first (which embeds the
-// verbatim Args/Result/Error), then run through the canonicalizer, so nested
+// Args/Result/Error JSON), then run through the canonicalizer, so nested
 // values inside the call are canonicalized too, not just the outer fields.
 func (p payload) canonical() ([]byte, error) {
 	b, err := json.Marshal(p)
@@ -209,6 +218,29 @@ func digest(canonical []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// contentDigest commits to the call's JSON before RFC 8785 converts numbers to
+// IEEE-754. Servers can preserve integers and decimals more precisely than that
+// model: without a second commitment, changing 9007199254740992 to
+// 9007199254740993 would retain the same JCS hash and signature. RawMessage keeps
+// numeric literals intact while json.Marshal consistently compacts whitespace
+// and escapes HTML-sensitive characters, exactly as the stored Entry does.
+//
+// Field order and omission rules here are part of the format. This helper is
+// shared by writer and verifier; no float decoding or independent copy belongs
+// in either path. Legacy entries have no content_hash and retain their original
+// JCS-only verification semantics.
+func (p payload) contentDigest() (string, error) {
+	raw, err := json.Marshal(struct {
+		Args   json.RawMessage `json:"args,omitempty"`
+		Result json.RawMessage `json:"result,omitempty"`
+		Error  json.RawMessage `json:"error,omitempty"`
+	}{p.Args, p.Result, p.Error})
+	if err != nil {
+		return "", fmt.Errorf("encoding audit content commitment: %w", err)
+	}
+	return digest(raw), nil
+}
+
 // Logger appends entries to one append-only, hash-chained JSONL file. It is
 // safe for concurrent use: Append serializes writers under a mutex so the chain
 // advances one entry at a time. Since milestone 3 both proxy directions call
@@ -225,22 +257,30 @@ type Logger struct {
 	prevHash string // hash of the last entry written (next entry links to it)
 }
 
+// errLogLocked reports that another open handle already holds the log's writer
+// lock; lockFile returns it so Open can say so plainly.
+var errLogLocked = errors.New("audit log is locked by another writer")
+
 // Open opens the log file at path for appending, creating it if it does not
-// exist. If the file already holds entries, Open reads the last one so new
-// entries continue its chain (seq keeps counting, prev_hash keeps linking)
+// exist. If the file already holds entries, Open verifies it before continuing
+// its chain (seq keeps counting, prev_hash keeps linking)
 // instead of forking a second chain in the same file. session labels every entry
 // this Logger writes; use NewSession to generate one per proxy run. priv signs
 // every entry and is required: a Logger never writes unsigned records, so a nil
 // key is a programming error, reported rather than silently downgraded.
+//
+// The handle Open keeps holds an exclusive kernel lock on the log file, so two
+// writers cannot fork the chain. The lock is taken before the history is read:
+// state read without it could be extended by another writer in between. The
+// kernel releases it when the handle closes, including when the process is
+// killed, which matters because MCP clients routinely terminate the servers
+// they launch. An earlier sidecar .lock created with O_EXCL survived exactly
+// that and blocked every later start until someone deleted it by hand.
 func Open(path, session string, priv ed25519.PrivateKey) (*Logger, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return nil, errors.New("audit: Open requires a valid ed25519 signing key")
 	}
-
-	// Resume from any existing content first, so a re-opened log continues its
-	// chain rather than restarting it. A missing file is not an error here: it
-	// just means we start a fresh chain.
-	seq, prev, err := lastState(path)
+	path, err := resolvedLogPath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -248,12 +288,49 @@ func Open(path, session string, priv ed25519.PrivateKey) (*Logger, error) {
 	// 0o600: the log can contain tool arguments and results, which may include
 	// secrets or PII (a documented v0 tradeoff; redaction is a later feature).
 	// Owner-only permissions are the least we can do about that on disk.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// O_RDWR rather than O_WRONLY: with O_APPEND, Windows opens a write-only
+	// handle for append-data access alone, and LockFileEx refuses such a handle.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening audit log %q: %w", path, err)
 	}
+	if err := lockFile(f); err != nil {
+		if errors.Is(err, errLogLocked) {
+			err = fmt.Errorf("audit log %q is already open by another Ganimedes writer; give each server its own --log", path)
+		} else {
+			err = fmt.Errorf("locking audit log %q: %w", path, err)
+		}
+		return nil, errors.Join(err, f.Close())
+	}
+
+	// Resume from any existing content first, so a re-opened log continues its
+	// chain rather than restarting it. A log that was just created is empty,
+	// which simply starts a fresh chain.
+	seq, prev, err := lastState(path, ed25519.PublicKey(priv[ed25519.SeedSize:]))
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
 
 	return &Logger{f: f, priv: priv, session: session, seq: seq, prevHash: prev}, nil
+}
+
+func resolvedLogPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving audit log path: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("resolving audit log path: %w", err)
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return "", fmt.Errorf("resolving audit log directory: %w", err)
+	}
+	return filepath.Join(parent, filepath.Base(abs)), nil
 }
 
 // Append records one completed tool call and returns the stored Entry.
@@ -261,9 +338,10 @@ func Open(path, session string, priv ed25519.PrivateKey) (*Logger, error) {
 // args, result, and rpcErr are the raw JSON values from the MCP messages;
 // result and rpcErr are mutually exclusive in JSON-RPC (a response carries one
 // or the other), and either may be empty. decision is one of the Decision*
-// constants. The chain advances only after the line is durably written, so a
+// constants. The chain advances only after the file accepts the whole line, so a
 // failed write leaves the Logger's state unchanged and the next Append reuses
-// the same prev_hash.
+// the same prev_hash. Append does not call fsync and promises no power-loss
+// durability; a partial failed write can require repairing the log offline.
 func (l *Logger) Append(tool string, args, result, rpcErr json.RawMessage, decision string) (Entry, error) {
 	return l.appendPayload(payload{
 		Tool:     tool,
@@ -295,11 +373,24 @@ func (l *Logger) AppendSessionHeader(info SessionInfo) (Entry, error) {
 func (l *Logger) appendPayload(p payload) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.f == nil {
+		return Entry{}, fmt.Errorf("appending audit entry: %w", os.ErrClosed)
+	}
+	if err := p.checkShape(); err != nil {
+		return Entry{}, fmt.Errorf("invalid audit entry: %w", err)
+	}
 
 	p.Seq = l.seq + 1
 	p.Time = time.Now().UTC().Format(time.RFC3339Nano)
 	p.Session = l.session
 	p.PrevHash = l.prevHash
+	if p.Kind == "" {
+		contentHash, err := p.contentDigest()
+		if err != nil {
+			return Entry{}, err
+		}
+		p.ContentHash = contentHash
+	}
 
 	// Canonicalize once, then both seal it (hash for the chain) and sign it
 	// (Ed25519 for authenticity) over the exact same bytes.
@@ -325,15 +416,16 @@ func (l *Logger) appendPayload(p payload) (Entry, error) {
 	return e, nil
 }
 
-// Close closes the underlying file. After Close, the Logger must not be used.
+// Close closes the underlying file, which also releases its writer lock.
+// Further appends return an error.
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.f == nil {
-		return nil
+	var err error
+	if l.f != nil {
+		err = l.f.Close()
+		l.f = nil
 	}
-	err := l.f.Close()
-	l.f = nil
 	return err
 }
 
@@ -358,8 +450,8 @@ func NewSession() string {
 // field vanish, and "called with no arguments" would become indistinguishable
 // from "arguments were not recorded" — the same reason SessionInfo keeps its
 // empty lists visible. Written this way the field is omitted only where it has
-// no meaning at all, on a session header, and a call's bytes stay identical to
-// what every earlier version wrote.
+// no meaning at all, on a session header. The argument convention remains
+// compatible with older calls even though new records add content_hash.
 func orNull(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return json.RawMessage("null")
