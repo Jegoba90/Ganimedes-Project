@@ -9,19 +9,16 @@
 ## 0. Why not Postman
 
 Postman (and the Swagger-paste workflow used on CryptoCapi) tests **HTTP
-endpoints**: request in, JSON response out. Ganimedes v0 has no HTTP surface to
-point it at — the proxy speaks **MCP over stdio** (newline-delimited JSON-RPC
+endpoints**: request in, JSON response out. The gateway speaks **MCP over stdio** (newline-delimited JSON-RPC
 2.0 over a subprocess's stdin/stdout), and the CLI is invoked directly, not
 called over a network.
 
-The one place an HTTP surface will exist is **milestone 4's human-in-the-loop
-approval page** (`net/http` on localhost, per `DESIGN.md` §6 open decisions).
-Whether that page also exposes a small JSON API (`GET /pending`,
-`POST /approve/:id`) that Postman could drive is a **design decision deferred to
-milestone 4**, not something v0 needs. Tracked as a forward note here; revisit
-when M4 starts.
+The **human-in-the-loop approval page** is an HTTP surface: `GET /` and form
+`POST /decision` on loopback. It is tested through `net/http/httptest` and live
+local listeners, including Host, CSRF, framing headers and body limits. It has
+no JSON `/pending` or `/approve/:id` API.
 
-Until then, every test in this plan is either a Go `testing` package test or a
+Every automated test in this plan is either a Go `testing` package test or a
 process-level smoke check — no separate testing framework, consistent with the
 Zero-Dependency Policy (Constitution Art. 1.1).
 
@@ -42,13 +39,20 @@ a mocking library.
 
 **Status:**
 
+Updated 2026-11-02 from the full Windows/amd64 suite on Go 1.26.10. The measured
+pre-change and final values, mutation evidence and execution limits are in
+[`AUDITORIA_2026-11-02.md`](AUDITORIA_2026-11-02.md). CI checks these floors through
+`.github/coverage-baseline.json`; an artificial 100% to 0% regression was verified
+to fail the checker.
+
 | Package | Coverage | Notes |
 |---|---|---|
-| `internal/audit` | 83.1% | append/verify, content-edit + deletion detection, chain resume, error responses, null args; RFC 8785 canonicalization (spec §3.2.3 vectors, ES6 numbers, key order) and Ed25519 signing (valid, forged-and-re-signed, wrong-key) + keypair generate/load round-trip |
-| `internal/proxy` | 84.5% | passthrough, tools/call correlation + audit append, the M3 deny path (blocked call errored + audited, block without a log), and the M4 approval path (approved forwards, rejected/timeout block, nil approver fails closed) via the in-process helper-process pattern |
+| `internal/jsoncheck` | 96.0% | shared strict JSON validation: duplicate/escaped names, Unicode, trailing values and nesting bounds |
+| `internal/audit` | 86.3% | append/verify, content-edit + deletion detection, chain resume, error responses, null args; RFC 8785 canonicalization (spec §3.2.3 vectors, ES6 numbers, key order) and Ed25519 signing (valid, forged-and-re-signed, wrong-key) + keypair generate/load round-trip |
+| `internal/proxy` | 92.4% | passthrough, tools/call correlation + audit append, the M3 deny path (blocked call errored + audited, block without a log), and the M4 approval path (approved forwards, rejected/timeout block, nil approver fails closed) via the in-process helper-process pattern |
 | `internal/approval` | 96.7% | approve/reject/timeout outcomes, the loopback guard in `New`, handler error paths, and a live listener via `httptest`; the fake `Approver` in the proxy tests keeps them socket-free |
-| `internal/cli` | 94.9% | dispatch + exit codes, `run` flag parsing (`--log`, `--config`, `--signing-key`, `--approval-addr`, `--approval-timeout`, `--`, command precedence), `verify` intact/tampered/missing/`--pubkey` resolution, `scan` usage/config/nonexistent/happy-path, `init`/usage paths; plus which stream the help lands on (stdout when requested, stderr with the error, never split) and the wording of the tamper report (names the failing entry, never states a total it does not know, admits the rest went unchecked) |
-| `internal/scan` | 86.8% | keyword matching + its no-self-overlap invariant, the `initialize`+`tools/list` handshake against an in-memory server (happy path, tools/list error, premature EOF), an end-to-end scan against a subprocess stand-in, and report rendering |
+| `internal/cli` | 95.7% | dispatch + exit codes, `run` flag parsing (`--log`, `--config`, `--signing-key`, `--approval-addr`, `--approval-timeout`, `--`, command precedence), `verify` intact/tampered/missing/`--pubkey` resolution, `scan` usage/config/nonexistent/happy-path, `init`/usage paths; plus which stream the help lands on (stdout when requested, stderr with the error, never split) and the wording of the tamper report (names the failing entry, never states a total it does not know, admits the rest went unchecked) |
+| `internal/scan` | 96.3% | keyword matching + its no-self-overlap invariant, the `initialize`+`tools/list` handshake against an in-memory server (happy path, tools/list error, premature EOF), an end-to-end scan against a subprocess stand-in, and report rendering |
 | `internal/config` | 100% | JSON `Load`: full, deny-only, unknown-field rejection, malformed, trailing data, missing file |
 | `internal/policy` | 100% | `Decide` decision table: deny-list hits, default-allow, case-sensitivity, nil engine |
 
@@ -258,9 +262,10 @@ deliberately rather than incidentally.
 | Log verified against the wrong public key | ✅ `TestVerify_WrongKey` |
 | Chain resumes correctly across log reopen | ✅ `TestResumeChain` |
 | Error responses (no result) recorded correctly | ✅ `TestAppend_RecordsErrorResponses` |
-| Malformed/garbage JSON-RPC line (not valid JSON) | ⬜ not tested — `pump`/`recordRequest`/`recordResponse` silently ignore unparseable lines by design, but there's no test proving that behavior (forward, don't crash, don't audit) |
-| A single message larger than 64KB | ⬜ not tested — `ReadBytes` was deliberately chosen over `bufio.Scanner` to avoid this limit, but no test exercises a large payload to prove it |
-| The wrapped server process dies mid-session | ⬜ not tested |
+| Malformed/ambiguous client frames, tool notifications and invalid Unicode | ✅ adversarial request tables in `request_security_test.go`; refused with exact base64 evidence |
+| Large frames and memory bounds | ✅ messages over 64KB within the 16 MiB ceiling pass intact; frames beyond the ceiling fail before forwarding; pending count/byte caps tested |
+| The wrapped server process dies or ignores EOF | ✅ helper-process lifecycle tests cover input errors, output errors, forced shutdown and inherited stdout |
+| A killed writer's lock blocks the next start, or a second writer forks the chain | ✅ `TestOpenAfterWriterIsKilled` (a re-executed test binary holds the log and is killed for real), `TestOpenRejectsConcurrentWriter`, `TestOpenRejectsWriterThroughHardLink`, `TestVerifyWhileWriterHoldsLock`. Seen to fail with no lock, with the former O_EXCL sidecar, with the Windows lock over the content, and with a write-only handle. Windows only so far; `flock` runs first in CI |
 | Audit log write fails (disk full / permissions) mid-session | ⬜ not tested — code path exists (`proxy.go`'s `recordResponse` logs to stderr and swallows the error per the fail-open design), no test proves the proxy keeps running |
 | CRLF-terminated log lines still parse | ✅ implicitly via `scanLines`' `TrimRight(line, "\r\n")`, but no explicit test |
 | A `tools/call` smuggled inside a JSON-RPC batch reaches the server unjudged | ✅ `TestRun_RefusesJSONRPCBatch`, `TestRun_RefusesBatchWithoutLog`, plus `TestIsJSONArray` / `TestBatchIDs` / `TestWriteBatchRefusal` (added 2026-09-22, `v0.3.3`) |
@@ -283,14 +288,18 @@ so the tests prove the *gateway* refuses the batch, not what a real server would
 have done with one had it arrived. The refusal is the property that matters here,
 but the asymmetry is real and is the first thing to close if an L3 session is run.
 
-**Gap to close:** the malformed-input, oversized-message, and crashed-subprocess
-cases remain the highest-value additions — they're exactly the kind of thing
-that's easy to get wrong silently in a proxy, and L1 already has the harness
-(`TestHelperMCPServer`-style helper processes) to add them cheaply. The
-malformed-JSON row above is now partly covered as a side effect: `isJSONArray`
-splits an unparseable line from a batch, and `TestIsJSONArray` pins that a bare
-number, a bare string and outright garbage all still take the forward-blind
-path.
+**2026-11-02 audit:** malformed-input, frame-size, pending-state and subprocess
+shutdown cases now have hermetic regressions. Shared JSON validation covers
+duplicate members, escaped duplicate names, invalid UTF-8, unpaired surrogates,
+trailing values and excessive depth. Scanner regressions cover pagination,
+cursor cycles, malformed results, output failures, terminal controls and a
+descendant retaining stdout after the direct child exits.
+
+Each new security property was checked against a deliberate mutation or against
+the vulnerable original implementation, then restored and retested. The audit
+report records the mutation evidence and final gate results. No real-browser
+DNS-rebinding/clickjacking exercise or real MCP-client smoke was run in this
+audit; handler tests establish the controls, not browser interoperability.
 
 ### L5 — Smoke tests
 
@@ -317,8 +326,10 @@ Linux, and macOS, and Ganimedes ships as a binary for all three.
 three OSes; the race detector runs on **Linux only**. It needs cgo, which the
 Windows runner has no compiler for and which produces a macOS test binary that
 hits the LC_UUID/dyld abort, so Linux is the one platform where a cgo test binary
-builds and runs cleanly. Data races are not OS-specific, so that single platform
-is enough to catch them, and the cgo-free run covers the other two functionally.
+builds and runs cleanly. Linux exercises shared concurrency paths; platform-
+specific races still need an appropriate supported runner to investigate. The
+cgo-free runs cover the other two platforms functionally. This audit ran on
+Windows and did not run the race detector.
 
 ### Release artifacts — verified after publishing, not assumed
 
@@ -398,13 +409,10 @@ client), which is not in v0.
 
 1. ✅ **`internal/cli` unit tests (L1).** Done 2026-07-26 with the M3 work
    (0% → 94.2%): flag parsing, exit codes, and `verify` outcomes are covered.
-2. **Adversarial cases for the proxy (L4).** Malformed JSON, oversized message,
-   crashed subprocess — the harness already exists, these are incremental
-   additions. *Partly done 2026-09-22:* the security review that produced
-   `v0.3.2` and `v0.3.3` added the batch, id-reuse and CSRF cases to §L4, which
-   is this item's highest-value half arriving through a review rather than a
-   planned test sprint. Oversized message and crashed subprocess are still open,
-   and are now the remainder of this item.
+2. ✅ **Adversarial cases for the proxy (L4).** Batch, id reuse and CSRF landed
+   in September. The 2026-11-02 audit added malformed/ambiguous input, large
+   frames, pending bounds and subprocess failure/shutdown cases. See §L4 and
+   the audit report for the mutation evidence and remaining execution limits.
 3. **Black-box binary test (L2).** Turns last session's manual PowerShell smoke
    check into a repeatable, CI-covered test.
 4. **E2E against a real MCP server (L3).** Lowest leverage for now — stays
@@ -413,7 +421,6 @@ client), which is not in v0.
    a fast first signal to matter. **M4's Postman question** is no longer on this
    list: it was answered "no" on 2026-07-30 (§2).
 
-None of items 2-5 block the v0 release. They are leverage, not gates: the release
+Items 1 and 2 are complete. Items 3-5 did not block the original v0 release: its
 gate is [`GO_NO_GO.md`](GO_NO_GO.md), and the plan for reaching it is step 5 of
-`DESIGN.md` §5. Item 2 (adversarial cases) is the one worth doing first once v0 is
-out, because it covers failure modes a security tool is judged on.
+`DESIGN.md` §5. Future releases still require their own current quality evidence.

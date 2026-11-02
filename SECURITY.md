@@ -84,9 +84,10 @@ wrong:
   with local access to that port can approve or reject. That is the v0 design,
   stated in the README. What it does have, since `v0.3.2`, is a CSRF token: a
   decision POST must carry the random value embedded in the page Ganimedes
-  rendered, which a page from another origin cannot read and therefore cannot
-  forge. That closes the cross-site case listed in scope above; it does not
-  close this one, because anyone who can load the page can also read the token
+  rendered. The Host must match the advertised numeric loopback authority,
+  closing the DNS-rebinding route to reading that token, and CSP/X-Frame-Options
+  disallow embedding the page for clickjacking. These controls do not
+  authenticate a local process, because anyone who can load the page can read the token
   it carries. The two are different attackers and only one of them is accepted.
 - **JSON-RPC batching is refused, not supported.** A request line holding an
   array rather than a single object is blocked whole, with one error returned
@@ -99,21 +100,44 @@ wrong:
   cleared by their response, so an unanswered call keeps its id occupied for
   the rest of the session and a later call reusing that id is refused too. No
   expiry: a timeout short enough to free a stuck id would also free one whose
-  response is merely slow, which is the misattribution `v0.3.3` closed. Every
-  MCP client counts ids upward and never revisits one, so this costs nothing
-  in practice.
+  response is merely slow, which is the misattribution `v0.3.3` closed. The
+  pending count/byte caps still apply; unresolved calls can eventually exhaust
+  that budget and later requests will be refused until space is released.
 - **The audit log holds secrets.** Entries store full arguments and results, so
   the log is as sensitive as the traffic that produced it (Art. 2.5). Redaction
   is a later feature.
 - **Truncating the tail of the log is not detectable.** Removing entries from the
   end leaves a shorter but internally consistent chain. Edits and deletions
   anywhere else are caught. Detecting truncation needs an external anchor.
+- **Legacy numeric precision.** Calls written without `content_hash` use only
+  RFC 8785's IEEE-754 canonical number model. A numeric edit that rounds to the
+  same binary64 value can retain a valid seal. New calls additionally sign a
+  digest of encoded args/result/error without converting numbers to float64;
+  old seals cannot be strengthened retroactively by a verifier. The reverse
+  does not hold: a `ganimedes verify` from v0.3.3 or earlier does not know
+  `content_hash` and reports a genuine new call record as tampered. Verify a
+  log with a binary at least as new as the one that wrote it.
+- **The log lock binds writers that ask for it.** The writer holds a kernel lock
+  on the log file itself (`flock` on Linux, macOS and the BSDs; `LockFileEx` on
+  Windows), so a second gateway on the same file, by any path or hard link, is
+  refused. The kernel releases it when the writer exits or is killed, so no
+  manual cleanup is ever needed. On Unix the lock is advisory: a program that
+  writes without taking it, such as an editor or a Ganimedes older than this
+  lock, is not stopped. On other platforms the log refuses to open.
 - **Auditing fails open.** If an append fails, the proxy logs to stderr and keeps
   forwarding. Losing a record is judged the lesser harm against taking the
   agent down.
+- **An unanswered allowed call has no completed audit entry.** The record is
+  written when its response arrives. The absence of an entry therefore does not
+  prove that no request reached the wrapped server. Writes are not fsync'ed per
+  entry, so a power failure can also lose recent records.
 - **`0600` is not enforced on Windows.** The audit log and the signing key are
   created with mode `0600`; POSIX honours it, Windows does not, so there the
   secrecy of the key rests on the directory's ACL.
+- **Key-pair publication is not atomic.** A failed public-file write can leave a
+  valid private key. On restart a missing public half is derived from it;
+  existing public files are never overwritten. An orphaned, corrupt or mismatched
+  public half prevents startup and requires manual recovery from trusted copies.
 - **Whoever holds both the log and the signing key can rewrite history.** The
   chain plus signature proves the log was not altered by someone without the key.
   It was never claimed to survive an attacker who has the key, and the docs say
@@ -138,6 +162,10 @@ wrong:
   agent misbehaving through its tools, not an attacker who owns the machine.
 
 ## Verifying what you downloaded
+
+Source builds require Go 1.26.10 or newer. Having no third-party modules does
+not remove standard-library vulnerabilities: the compiler and library must be
+kept patched, and `govulncheck ./...` remains part of the gate.
 
 Every release ships `SHA256SUMS`, covering the binaries themselves rather than an
 archive, so what you check is byte for byte the file you run. That proves

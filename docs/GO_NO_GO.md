@@ -70,8 +70,17 @@ with any competitor or a hosted tier; those are explicitly out of v0 (README,
   anything is built or published, so a broken commit could not have shipped. Worth
   stating plainly rather than glossing: the three-OS confirmation is `1bd3ce7`'s,
   and `c57ace8` carries a single-platform re-test on top of it.*
-- **G2 - Coverage ratchet.** No package decreases vs. its prior baseline
-  (Art. 4.2). *Status locally:* config 100%, policy 100%, approval 96.7% (new),
+- **G2 - Coverage ratchet.** No package decreases vs. its prior baseline (Art. 4.2).
+
+  **Current audit snapshot (2026-11-02, Windows/amd64, Go 1.26.10):** approval
+  96.7%, audit 86.3%, cli 95.7%, config 100%, jsoncheck 96.0%, policy 100%, proxy
+  92.4%, scan 96.3%. No decrease against the tree measured before this audit.
+  These values are enforced by `.github/coverage-baseline.json`. The release
+  evidence and older measurements below remain historical; this audit did not
+  rerun GitHub CI or the original real-client smokes. See
+  [`AUDITORIA_2026-11-02.md`](AUDITORIA_2026-11-02.md).
+
+  **Historical launch measurement:** config 100%, policy 100%, approval 96.7% (new),
   audit 83.1% (=), cli 94.8% (up from 93.6), proxy 84.5% (up from 82.4), scan 86.8%
   (=). No decrease.
 - **G3 - Zero-dependency, single static binary.** `go.mod` has no third-party

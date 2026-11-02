@@ -166,6 +166,57 @@ cheapest piece (audit) second; release only what has been checked, last.
 
 ## 7. Decision log
 
+### Strict interpretation and bounded resources (2026-11-02)
+
+The audit found parser differences that could turn uncertainty into permission:
+tool notifications, malformed typed fields, duplicate members and lossy Unicode
+decoding. Shared `internal/jsoncheck` now validates uniqueness and Unicode;
+protocol/config consumers additionally require their exact field names and
+shapes. Valid forwarded messages retain their original bytes. Invalid requests
+are denied and logged with base64 evidence instead of lossy JSON.
+
+Request ids are decoded before correlation, including numeric equivalence and
+string escapes. Non-tool requests reserve ids without creating tool records;
+server requests cannot consume client reservations. A 16 MiB frame limit and
+1024/64 MiB pending-data limits bound retained traffic. These are compatibility
+limits, not a total process-memory limit or per-tool rate policy.
+
+The approval page accepts only the advertised loopback Host and prevents
+framing/caching. Its CSRF token remains required; local access still confers the
+ability to decide. HTTP decision bodies are limited to 8 KiB, reads to 5 seconds,
+writes to 10 seconds, and idle connections to 30 seconds. Closing the server
+wakes pending approvals with the fail-closed outcome.
+
+`scan` follows opaque pagination cursors with fresh ids, rejects malformed
+responses and reports no successful partial inventory. It bounds the exchange
+to 15 seconds, 64 MiB, 1024 pages and 16 MiB per frame, closing pipes on timeout
+even if descendants inherited the server's stdout.
+
+The audit verifier now seals every stored payload member before deciding
+whether its schema is supported. Duplicate keys and invalid Unicode cannot be
+silently normalized into an accepted log. JSONL formatting may change without
+changing the JSON value; the log is not a verbatim wire capture.
+
+New call records include `content_hash`: a signed SHA-256 commitment to encoded
+raw args/result/error without floating-point conversion. This closes edits of
+large integers and precise decimals that JCS alone maps to the same binary64
+value. Old records without the field remain verifiable with their old precision
+limit; no verifier can retroactively add evidence to an old signature.
+
+`Open` holds an exclusive kernel lock on the log file and verifies existing
+history with the signing key before resuming. Invalid history and missing final
+LF are refused; a second writer is refused too, through any path or hard link,
+so each server needs its own log. The kernel releases the lock when its process
+dies. An earlier sidecar `.lock` created with O_EXCL was rejected because MCP
+clients kill the servers they launch, and that lock outlived the kill and
+blocked every restart. On Unix the lock is advisory; no per-entry fsync is
+claimed.
+
+Go 1.26.10 is the minimum build toolchain because standard-library security fixes
+are product dependencies too. Actions are pinned by commit with Dependabot
+updates; coverage floors and Trivy findings block CI, and release reuses the
+full quality gate at its own commit. No tag was pushed as part of this review.
+
 ### Language: Go (decided for v0)
 
 - **Decision:** Go for v0. Confirmed 2026-07-22.
@@ -243,8 +294,9 @@ cheapest piece (audit) second; release only what has been checked, last.
     RFC 8785 canonical JSON, via a hand-rolled canonicalizer (`canonical.go`)
     that sorts object keys by UTF-16 code unit, applies ECMAScript number
     formatting, and escapes strings per the spec. It is validated against the
-    RFC 8785 §3.2.3 worked example. The verbatim wire bytes of args/result/error
-    are still stored as-is; canonicalization is applied only to compute the seal.
+    RFC 8785 §3.2.3 worked example. The JSON values of args/result/error remain
+    in the log; its encoder can compact whitespace and escape HTML. Exact wire
+    bytes are preserved on forwarding, while canonicalization defines the seal.
   - Each `Entry` gained a `sig` field alongside `hash` and `prev_hash`; `Logger`
     holds an Ed25519 signing key; `Verify` gained a signature-check step
     alongside the hash and chain-link checks. Digest and signature are taken over
@@ -471,9 +523,9 @@ cheapest piece (audit) second; release only what has been checked, last.
   response, so a call the server never answers holds its id for the rest of the
   session. No expiry: a TTL short enough to release a stuck id is also short
   enough to release one whose response is merely slow, which puts the
-  misattribution back. Every MCP client counts ids upward, so this costs nothing
-  in practice. One narrower gap stays open deliberately: `idKey` compares raw id
-  bytes, so `1` and `1.0` are distinct keys ([`TECH_DEBT.md`](TECH_DEBT.md) TD-5).
+  misattribution back. Clients that do not reuse ids avoid that collision cost.
+  The narrower numeric-equivalence gap left here was closed on 2026-11-02:
+  `idKey` now compares decoded ids, as documented above.
 - **Both were checked against a deliberate break** of the code they cover, to
   confirm the new tests are able to fail rather than passing by construction.
 

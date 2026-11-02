@@ -19,7 +19,8 @@ Concretely in v0, Ganimedes is a single Go binary that acts as a transparent
 proxy in front of one MCP (Model Context Protocol) server. To the agent it looks
 exactly like the real server; to the real server it looks like the agent. In the
 middle it inspects `tools/call` messages and, on each one, can allow it, block it,
-or pause it for a human, and it records every call to a tamper-evident audit log.
+or pause it for a human. Completed calls and blocked attempts are written to a
+tamper-evident audit log, subject to the failure boundaries below.
 
 It answers four questions about every action an agent takes:
 
@@ -68,8 +69,9 @@ v0 does three things, plus two diagnostic helpers:
                             └─ forwards or blocks (never corrupts the wire)
 ```
 
-Internally, `proxy` is the only package that knows JSON-RPC/MCP framing. `config`,
-`policy`, `audit`, and `approval` are pure leaf packages the proxy wires together.
+Internally, `proxy` owns live JSON-RPC/MCP forwarding, while `scan` also speaks the
+discovery handshake. `config`, `policy`, `audit`, and `approval` have separate
+responsibilities; `jsoncheck` provides their shared strict JSON validation.
 Full detail in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 5. Functional specification
@@ -80,14 +82,16 @@ Full detail in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   forwards messages in both directions.
 - Forwards the **exact bytes** read, never a re-encoded copy, so inspection can
   never alter the wire (Art. 1.3).
-- Only `tools/call` is inspected. `initialize`, `tools/list`, `resources/*`,
-  `prompts/*`, notifications, and all server errors are pure passthrough (Art. 3.3).
+- Policy examines only `tools/call`. With inspection active, client envelopes
+  must be unambiguous JSON-RPC 2.0; duplicate members, invalid Unicode, malformed
+  envelopes and tool notifications are refused. Valid unrelated messages retain
+  their exact bytes (Art. 3.3). Both directions have a 16 MiB line limit.
 - Acceptance: an agent behaves identically through Ganimedes as directly, except
   where a policy deliberately blocks or pauses a call.
 
 ### 5.2 Audit log
 
-- Every observed `tools/call` becomes one JSONL entry holding the full call (tool,
+- A completed `tools/call` or blocked attempt becomes one JSONL entry holding the full call (tool,
   arguments, result or error), plus `decision`, `seq`, timestamp, `session`,
   `prev_hash`, `hash`, and `sig`.
 - **Session header:** each run opens with one entry of `kind: "session"` whose
@@ -96,11 +100,12 @@ Full detail in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   conditions its calls were judged under and not only the calls themselves. Empty
   lists are written as `[]` rather than omitted, because "no rules were loaded"
   is the fact an absent field would hide. It is sealed and chained like any other
-  entry. A tool call carries no `kind`, which keeps its bytes identical to what
-  versions before this wrote.
+  entry. A tool call carries no `kind`, preserving the legacy kind convention;
+  new calls additionally include `content_hash`.
 - **Hash chain:** `hash = SHA-256(RFC 8785 canonical JSON of the entry minus its
   seal)`. Each entry links to the previous via `prev_hash`. Any edit, reorder,
-  insert, or delete of a past entry breaks the chain.
+  insert, or delete changes the verified content/links, subject to canonical
+  equivalence in legacy records and the tail-truncation boundary below.
 - **Signature:** every entry is Ed25519-signed over the same canonical bytes, so a
   third party can verify authorship offline.
 - **Decisions:** `allow`, `deny`, `approved`, `rejected`, `timeout`.
@@ -148,6 +153,10 @@ Full detail in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   (`delete`, `drop`, `exec`, `shell`, `payment`, `transfer`, network verbs, ...).
 - Reporting only: no enforcement, no audit log, no config written. It is the tool
   you run to decide the deny-list.
+- Follows opaque pagination cursors with fresh ids. Timeout (15s), cyclic
+  cursors, malformed responses, more than 1024 pages, a message over 16 MiB or
+  server output over 64 MiB fail the scan without a successful partial report.
+- Tool names are quoted to prevent control characters from forging report rows.
 
 ## 6. Interfaces
 
@@ -187,7 +196,8 @@ ganimedes help
 ```
 
 - JSON, not YAML (stdlib-only, Art. 1.1).
-- Unknown fields are rejected, and trailing data after the object is rejected: a
+- Unknown or incorrectly cased fields, duplicate members, invalid Unicode, null
+  roots and trailing data after the object are rejected: a
   mistyped key fails loudly rather than silently disabling a rule.
 - `command`/`args` are optional in the file (may be supplied on the CLI). `deny`
   and `approve` are both default-allow lists.
@@ -202,8 +212,9 @@ ganimedes help
 | `kind` | `session` on a header; **absent** on a tool call |
 | `session_info` | header only: `version`, `command`, `args`, `deny`, `approve` |
 | `tool` | call only: the `tools/call` name |
-| `args` | call only: arguments, verbatim JSON from the wire |
+| `args` | call only: JSON argument value; invalid requests use `raw_base64` evidence |
 | `result` / `error` | call only: present on success / failure (mutually exclusive) |
+| `content_hash` | new calls: hex SHA-256 of encoded raw args/result/error without numeric rounding; absent in legacy calls and headers |
 | `decision` | call only: `allow` \| `deny` \| `approved` \| `rejected` \| `timeout` |
 | `prev_hash` | hash of the previous entry (chain link) |
 | `hash` | hex SHA-256 of the RFC 8785 canonical payload |
@@ -213,6 +224,18 @@ ganimedes help
 fields contradict the kind it claims. That check runs after the seal, so it never
 reports tampering: it reports a record this build cannot classify.
 
+New call records additionally bind encoded args/result/error through
+`content_hash`; its construction is specified in `ARCHITECTURE.md` §4. Legacy
+records without it retain IEEE-754 rounding equivalence. The log encoder may
+compact whitespace or escape HTML, so this is JSON content evidence rather than
+a verbatim capture. Appends are not fsync'ed per entry.
+
+One writer holds a kernel lock on the log file; the kernel releases it when that
+process exits or is killed. Startup verifies the existing history with the
+signing key and requires a final LF. Corruption or another live writer prevents
+startup; the operator preserves and recovers the original history offline. Each
+server should use a distinct log.
+
 File permissions are `0600` (the log may contain secrets). POSIX honours that
 mode; Windows does not, so there the file inherits the directory's ACLs and the
 directory is what keeps it private (`GO_NO_GO.md` §6).
@@ -220,8 +243,11 @@ directory is what keeps it private (`GO_NO_GO.md` §6).
 ### 6.4 Approval page (HTTP, loopback only)
 
 - `GET /` renders the pending-approval list.
-- `POST /decision` with form fields `id` and `action` (`approve` / `reject`)
+- `POST /decision` with form fields `id`, `action` (`approve` / `reject`) and
+  the per-run `csrf_token` from the rendered form
   resolves one pending call and redirects to `/`.
+- Only the advertised Host is accepted. CSP/X-Frame-Options prevent framing;
+  responses are not cached. Bodies are limited to 8 KiB and server I/O has deadlines.
 - No authentication in v0 (loopback-only; documented limitation, Art. 2.4).
 
 ### 6.5 Keys and environment
@@ -230,8 +256,13 @@ directory is what keeps it private (`GO_NO_GO.md` §6).
   `ganimedes-signing.key`, `0600`), with the public half written beside it as
   `.pub`. Overridable via `--signing-key` or the `GANIMEDES_SIGNING_KEY`
   environment variable.
-- `verify` finds the public key via `--pubkey`, else the default `.pub`, else
-  derives it from the private key.
+- Existing public keys are never overwritten. A public key without its private
+  partner prevents automatic generation. An existing private key recreates only
+  a missing public half; a corrupt or mismatched public half requires recovery.
+  Publishing the two files is not atomic.
+- `verify` finds the public key via `--pubkey`, else the `.pub` corresponding to
+  `GANIMEDES_SIGNING_KEY` (or the default private-key path), else derives it from
+  that private key.
 
 ## 7. Guarantees and their boundaries (honest, Art. 2.4)
 

@@ -22,11 +22,11 @@ internal/proxy  ◀── internal/config (what to spawn, deny/approval lists)
   the real MCP server (subprocess, spawned via os/exec)
 ```
 
-`proxy` is the only package that talks to the outside world (stdio to the
-client, a subprocess to the real server). `policy` and `audit` are pure
-logic/IO packages with no knowledge of JSON-RPC framing; `proxy` calls into
-them. This keeps each package testable on its own, without spawning a real
-subprocess or a real MCP client.
+`proxy` owns the live MCP session. `scan` also spawns a server and speaks the
+discovery handshake; `approval` serves loopback HTTP and `audit` owns its files.
+`policy` is pure decision logic. `jsoncheck` supplies duplicate-member and
+Unicode validation shared by the protocol, config and audit consumers. None of
+these requires an external MCP server for its tests.
 
 ## 2. Milestone 1 design: transparent passthrough
 
@@ -128,9 +128,9 @@ file was not altered after the fact. This is build-order step 2 in
 
 Milestone 1 forwarded with `io.Copy` (raw bytes, no parsing). To recognize a
 `tools/call`, the proxy now reads the stream as **newline-delimited JSON** with
-`bufio.Reader.ReadBytes('\n')` — not `bufio.Scanner`, whose 64KB token limit a
-single tool result (a file's contents, an API payload) can easily exceed;
-`ReadBytes` grows as needed.
+`bufio.Reader.ReadSlice('\n')` with bounded accumulation, rather than Scanner's
+64KB default. Each direction permits 16 MiB per line; an oversized line ends the
+session before any fragment of that line is forwarded.
 
 **The wire bytes never change.** Each message is forwarded as the exact bytes
 that were read; parsing happens on a separate pass purely to observe. Nothing we
@@ -167,9 +167,13 @@ a call a human has already approved, because the approval is about the call and
 not about whether the record of it can be trusted. The entry is cleared only by
 its response, so an unanswered call holds its id for the session; there is no
 expiry, because a timeout short enough to free a stuck id also frees one whose
-response is merely slow, which is the failure this closes. One narrower gap
-stays open: `idKey` compares raw id bytes, so `1` and `1.0` are distinct keys
-though JSON calls them one number ([`TECH_DEBT.md`](TECH_DEBT.md) TD-5).
+response is merely slow, which is the failure this closes. Ids are decoded before
+comparison: string escapes do not distinguish ids, and numeric ids use finite
+IEEE-754 values (`1`, `1.0`, `1e0`, and signed zero agree). Large numeric ids may
+conservatively collide after rounding, so string ids are preferable for those
+values. Non-tool requests reserve ids too, preventing a response for initialize
+from being attributed to a tool call. Reservations are bounded to 1024 entries
+and 64 MiB of retained id/tool/argument bytes; map/allocator overhead is extra.
 
 In milestone 2 the append only ever happened on the **response** side, so all
 audit writes came from one goroutine and the hash chain was serialized for free
@@ -190,8 +194,8 @@ Each line is one `Entry`: a `payload` plus the `hash` and `sig` that seal it. A
 payload is one of two kinds.
 
 - **A tool call** (seq, timestamp, session, tool, args, result/error, decision,
-  `prev_hash`). It carries no `kind` field at all, which is what keeps its bytes
-  identical to those written before headers existed, so older logs still verify.
+  `prev_hash`, and `content_hash` for new records). It carries no `kind` field,
+  preserving the legacy convention. Older logs still verify with their limits.
 - **A session header** (seq, timestamp, session, `kind: "session"`,
   `session_info`, `prev_hash`), written once per run before any traffic.
   `session_info` holds the gateway version, the wrapped command and its
@@ -212,8 +216,10 @@ not know, and vouching for it would breach Art. 2.4.
   by their UTF-16 code units, so the declaration order of the Go struct does not
   affect the seal; writer and verifier agree because both go through the single
   helper in `canonical.go`. `args`/`result`/`error` are kept as
-  `json.RawMessage`, so the exact JSON that crossed the wire stays in the file
-  and canonicalization applies only to the bytes being sealed.
+  `json.RawMessage`, preserving the JSON values rather than decoding them through
+  application structs. The JSON encoder can compact whitespace and escape HTML;
+  the log is not a byte-for-byte copy of each wire message. Refused malformed
+  messages store their original bytes as `args.raw_base64` instead.
 - **Why a separate `payload` struct embedded in `Entry`:** hashing an entry
   means "serialize it without its own hash". Embedding flattens `payload`'s
   fields into `Entry`, so `json.Marshal(entry.payload)` *is* the entry minus its
@@ -222,11 +228,39 @@ not know, and vouching for it would breach Art. 2.4.
   first entry's is the genesis value (empty string). `Verify` recomputes every
   hash (catching content edits) and checks every `prev_hash` against the prior
   entry (catching reordering, insertion, or deletion).
-- **Resume:** `Open` reads the last entry so a re-opened log continues its chain
-  (seq keeps counting, `prev_hash` keeps linking) instead of forking a second
-  chain in the same file.
+- **Exact-number commitment:** new calls add `content_hash`, the hex SHA-256 of
+  the JSON encoding of an object with `args`, `result`, `error` in that order,
+  omitting absent values. The values remain RawMessages: whitespace is compacted
+  and HTML-sensitive characters escaped as by Go's JSON encoder, without
+  decoding numbers to float64. The digest string is part of the signed JCS
+  payload and Verify recomputes it. This binds numeric representations that JCS
+  alone would round to one value. Legacy calls without this field retain that
+  old IEEE-754 limitation; session headers omit it.
+- **Resume:** `Open` opens the log and takes an exclusive kernel lock on it
+  (`flock` on Unix, `LockFileEx` on Windows) before reading anything, then
+  verifies the complete existing history against the signing key, requires a
+  final LF and only then reads the last state for appending. Invalid history is
+  refused, never silently skipped or repaired. The lock lives on the append
+  handle until Close; a second writer fails, whichever path or hard link it
+  uses. The kernel drops the lock when the process dies, so a killed gateway
+  leaves nothing to clean up. On Windows the locked byte sits far past any
+  real content, because byte-range locks there are mandatory and a lock over
+  the content would stop `verify` reading a log in use.
 
 ### Honest limits (documented, not bugs)
+
+On Unix the writer lock is advisory: it stops other Ganimedes writers, not a
+program that ignores it. Startup refuses damaged history or missing LF; preserve
+the original log before offline recovery. Writes are not fsync'ed per entry.
+Legacy call records without `content_hash` retain the numeric equivalence
+described above.
+
+The proxy allows a five-second grace period per shutdown phase: after client
+EOF, after server stdout closes, and for draining inherited stdout after direct
+child exit. It kills/reaps the direct child as needed and closes its own pipes.
+It does not terminate descendant process trees or interrupt arbitrary blocking
+io.Reader/io.Writer implementations supplied by library callers. Approval waits
+retain their configured timeout.
 
 - **Tail truncation is not detectable.** Removing entries from the *end* leaves a
   shorter but internally consistent chain. Detecting that needs an external
@@ -313,8 +347,9 @@ The block happens on the **request** direction, before forwarding:
     no policy check and no audit entry at all. `isJSONArray` now separates a
     batch from genuine garbage, and `blockBatch` refuses the whole line: one
     error per id, returned as an array so a client still correlates it, and
-    the raw batch recorded verbatim in the audit entry under the synthetic
-    tool name `(batch)`. Deciding its elements individually would mean building
+    the batch JSON value recorded under the synthetic tool name `(batch)`.
+    Ambiguous batches use base64 evidence so invalid strings/duplicates are not
+    normalized away. Deciding its elements individually would mean building
     batch semantics (split, judge, re-encode, recombine) for a wire form the
     MCP spec retired in `2025-06-18`.
   - **A reused request id**, per the correlation note in §4 above.
