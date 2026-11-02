@@ -53,7 +53,7 @@ func TestAppendSessionHeader_RecordsTheConditionsAndVerifies(t *testing.T) {
 		t.Fatalf("AppendSessionHeader: %v", err)
 	}
 	appendCall(t, l, "read_file", `{"path":"a.txt"}`, `{"ok":true}`)
-	l.Close()
+	closeLog(t, l)
 
 	lines := readLines(t, path)
 	if len(lines) != 2 {
@@ -109,7 +109,7 @@ func TestAppendSessionHeader_EmptyPolicyIsVisible(t *testing.T) {
 	if _, err := l.AppendSessionHeader(SessionInfo{Version: "1.2.3", Command: "srv"}); err != nil {
 		t.Fatalf("AppendSessionHeader: %v", err)
 	}
-	l.Close()
+	closeLog(t, l)
 
 	line := string(readLines(t, path)[0])
 	for _, want := range []string{`"deny":[]`, `"approve":[]`, `"args":[]`} {
@@ -138,6 +138,8 @@ func TestVerify_RejectsEntriesItCannotJudge(t *testing.T) {
 		{"header carrying a call", payload{Kind: KindSession, Info: info, Tool: "read_file", Decision: DecisionAllow}, "carrying tool-call fields"},
 		{"call without a tool name", payload{Args: noArgs, Decision: DecisionAllow}, "without a tool name"},
 		{"call without a decision", payload{Tool: "read_file", Args: noArgs}, "without a decision"},
+		{"call with an unknown decision", payload{Tool: "read_file", Args: noArgs, Decision: "future"}, "unknown tool-call decision"},
+		{"call with both response fields", payload{Tool: "read_file", Args: noArgs, Decision: DecisionAllow, Result: noArgs, Error: noArgs}, "both result and error"},
 		{"call carrying session_info", payload{Tool: "read_file", Args: noArgs, Decision: DecisionAllow, Info: info}, "carrying session_info"},
 	}
 

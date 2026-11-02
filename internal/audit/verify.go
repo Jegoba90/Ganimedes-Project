@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/Jegoba90/Ganimedes-Project/internal/jsoncheck"
 )
 
 // VerifyResult is the outcome of walking a log's hash chain end to end.
@@ -53,7 +55,7 @@ func Verify(path string, pub ed25519.PublicKey) (VerifyResult, error) {
 		// nothing here to verify"), not a silent OK.
 		return VerifyResult{}, fmt.Errorf("opening audit log %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only handle: no buffered writes or pending integrity result.
 
 	var (
 		res      VerifyResult
@@ -65,8 +67,8 @@ func Verify(path string, pub ed25519.PublicKey) (VerifyResult, error) {
 		res.Entries++
 		pos := res.Entries
 
-		var e Entry
-		if err := json.Unmarshal(line, &e); err != nil {
+		e, c, err := decodeEntry(line)
+		if err != nil {
 			// A line we cannot parse is a read-level problem, not a chain
 			// finding: we can't judge a chain we can't decode.
 			return fmt.Errorf("entry %d: not valid JSON: %w", pos, err)
@@ -74,10 +76,6 @@ func Verify(path string, pub ed25519.PublicKey) (VerifyResult, error) {
 
 		// 1. Content check: canonicalize once, then confirm the stored hash still
 		// matches the payload.
-		c, err := e.payload.canonical()
-		if err != nil {
-			return fmt.Errorf("entry %d: %w", pos, err)
-		}
 		want := digest(c)
 		if e.Hash != want {
 			res.fail(pos, fmt.Sprintf("content was modified (hash mismatch: stored %s, recomputed %s)", short(e.Hash), short(want)))
@@ -91,13 +89,36 @@ func Verify(path string, pub ed25519.PublicKey) (VerifyResult, error) {
 			res.fail(pos, "signature does not verify (entry forged or signed by another key)")
 			return errStop
 		}
+		if e.ContentHash != "" {
+			contentHash, err := e.contentDigest()
+			if err != nil {
+				return fmt.Errorf("entry %d: %w", pos, err)
+			}
+			if e.ContentHash != contentHash {
+				res.fail(pos, "JSON content was modified (content_hash mismatch)")
+				return errStop
+			}
+		}
+
+		// Every stored member participates in the seal, even when this version
+		// has no Go field for it. A correctly sealed future representation is
+		// still outside what we can judge: do not silently discard unknown
+		// fields, case aliases, or explicit fields this format omits.
+		supported, err := e.canonical()
+		if err != nil {
+			return fmt.Errorf("entry %d: %w", pos, err)
+		}
+		if !bytes.Equal(c, supported) {
+			res.fail(pos, "entry contains unsupported fields or field representations")
+			return errStop
+		}
 
 		// 3. Shape check: is this one of the record kinds this format defines,
 		// carrying the fields that kind requires? Reaching here means the seal
 		// held, so a failure is not tampering: it is a log written by a version
 		// whose records this build cannot judge. Refusing beats vouching for
 		// something we do not understand (Constitution Art. 2.4).
-		if err := e.payload.checkShape(); err != nil {
+		if err := e.checkShape(); err != nil {
 			res.fail(pos, err.Error())
 			return errStop
 		}
@@ -135,6 +156,38 @@ func Verify(path string, pub ed25519.PublicKey) (VerifyResult, error) {
 		res.OK = true
 	}
 	return res, nil
+}
+
+// decodeEntry obtains the canonical payload from the stored object rather than
+// reconstructing it from Entry. Reconstructing first would omit an attacker's
+// added fields, and encoding/json's case-insensitive matching could also hide a
+// renamed member. Only the two seal members are excluded from the signed bytes.
+func decodeEntry(line []byte) (Entry, []byte, error) {
+	if err := jsoncheck.Validate(line); err != nil {
+		return Entry{}, nil, err
+	}
+	var e Entry
+	if err := json.Unmarshal(line, &e); err != nil {
+		return Entry{}, nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(line, &fields); err != nil {
+		return Entry{}, nil, err
+	}
+	if fields == nil {
+		return Entry{}, nil, errors.New("audit entry must be a JSON object")
+	}
+	delete(fields, "hash")
+	delete(fields, "sig")
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return Entry{}, nil, fmt.Errorf("encoding stored audit payload: %w", err)
+	}
+	c, err := canonicalizeJSON(raw)
+	if err != nil {
+		return Entry{}, nil, err
+	}
+	return e, c, nil
 }
 
 // verifySignature reports whether sigB64 is a valid Ed25519 signature by pub over
@@ -189,9 +242,9 @@ func scanLines(r io.Reader, fn func(line []byte) error) error {
 
 // lastState returns the seq and hash of the last entry in the log at path, so a
 // re-opened Logger can continue the chain. A missing file yields (0, genesis):
-// a fresh chain. It reads only the fields it needs and tolerates a trailing
-// partial line (e.g. a crash mid-write) by keeping the last fully-parsed entry.
-func lastState(path string) (seq uint64, prevHash string, err error) {
+// a fresh chain. A pre-existing file must be fully verifiable and end with LF:
+// appending after a partial line or a missing delimiter would corrupt history.
+func lastState(path string, pub ed25519.PublicKey) (seq uint64, prevHash string, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -199,7 +252,27 @@ func lastState(path string) (seq uint64, prevHash string, err error) {
 		}
 		return 0, "", fmt.Errorf("reading audit log %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only handle; all read errors are reported below.
+	info, err := f.Stat()
+	if err != nil {
+		return 0, "", fmt.Errorf("checking audit log: %w", err)
+	}
+	if info.Size() > 0 {
+		var end [1]byte
+		if _, err := f.ReadAt(end[:], info.Size()-1); err != nil {
+			return 0, "", fmt.Errorf("reading audit log terminator: %w", err)
+		}
+		if end[0] != '\n' {
+			return 0, "", errors.New("audit log does not end with a newline; refusing to append")
+		}
+	}
+	result, err := Verify(path, pub)
+	if err != nil {
+		return 0, "", fmt.Errorf("verifying audit log before append: %w", err)
+	}
+	if !result.OK {
+		return 0, "", fmt.Errorf("audit log entry %d failed verification: %s", result.BadEntry, result.Reason)
+	}
 
 	seq, prevHash = 0, genesisHash
 	scanErr := scanLines(f, func(line []byte) error {
@@ -208,9 +281,7 @@ func lastState(path string) (seq uint64, prevHash string, err error) {
 			Hash string `json:"hash"`
 		}
 		if err := json.Unmarshal(line, &e); err != nil {
-			// Ignore an unparseable trailing line rather than refusing to open
-			// the log at all; Verify is the tool that judges integrity.
-			return nil
+			return fmt.Errorf("reading verified audit log entry: %w", err)
 		}
 		seq, prevHash = e.Seq, e.Hash
 		return nil

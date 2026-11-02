@@ -24,6 +24,44 @@ func newTestKey(t *testing.T) (ed25519.PrivateKey, ed25519.PublicKey) {
 	return priv, pub
 }
 
+// Reconstructing the signed payload from a Go struct would silently drop new
+// fields and accept encoding/json's case-insensitive aliases. Verify must seal
+// the whole stored payload so these edits cannot retain a valid signature.
+func TestVerify_DetectsUnsealedFields(t *testing.T) {
+	for _, edit := range []struct{ name, old, replacement string }{
+		{"new member", `"tool":"read_file"`, `"tool":"read_file","unsealed":"changed"`},
+		{"case alias", `"tool":"read_file"`, `"TOOL":"read_file"`},
+		{"empty optional member", `"tool":"read_file"`, `"tool":"read_file","kind":""`},
+		{"duplicate member", `"tool":"read_file"`, `"tool":"changed","tool":"read_file"`},
+		{"duplicate argument", `"path":"a.txt"`, `"path":"changed","path":"a.txt"`},
+	} {
+		t.Run(edit.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			priv, pub := newTestKey(t)
+			l := openLog(t, path, "sess-1", priv)
+			appendCall(t, l, "read_file", `{"path":"a.txt"}`, `{"ok":true}`)
+			if err := l.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			modified := strings.Replace(string(original), edit.old, edit.replacement, 1)
+			if modified == string(original) {
+				t.Fatal("test failed to modify the signed entry")
+			}
+			if err := os.WriteFile(path, []byte(modified), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			res, err := Verify(path, pub)
+			if err == nil && res.OK {
+				t.Fatal("Verify accepted an edit outside the reconstructed payload")
+			}
+		})
+	}
+}
+
 // openLog opens a signed logger for a test, failing on error.
 func openLog(t *testing.T, path, session string, priv ed25519.PrivateKey) *Logger {
 	t.Helper()
@@ -31,7 +69,19 @@ func openLog(t *testing.T, path, session string, priv ed25519.PrivateKey) *Logge
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := l.Close(); err != nil {
+			t.Errorf("cleaning up Logger: %v", err)
+		}
+	})
 	return l
+}
+
+func closeLog(t *testing.T, l *Logger) {
+	t.Helper()
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 }
 
 // appendCall is a tiny helper: append one allowed tool call and fail the test
@@ -92,7 +142,7 @@ func TestVerify_DetectsContentEdit(t *testing.T) {
 	l := openLog(t, path, "sess-1", priv)
 	appendCall(t, l, "read_file", `{"path":"a.txt"}`, `{"bytes":10}`)
 	appendCall(t, l, "delete_all", `{"scope":"prod"}`, `{"ok":true}`)
-	l.Close()
+	closeLog(t, l)
 
 	// Rewrite history: pretend the dangerous call targeted "test" instead of
 	// "prod", leaving the stored hash untouched.
@@ -124,7 +174,7 @@ func TestVerify_DetectsForgedEntry(t *testing.T) {
 	l := openLog(t, path, "sess-1", priv)
 	appendCall(t, l, "read_file", `{"path":"a"}`, `{"ok":true}`)
 	appendCall(t, l, "delete_all", `{"scope":"test"}`, `{"ok":true}`)
-	l.Close()
+	closeLog(t, l)
 
 	attackerPriv, _ := newTestKey(t)
 	lines := readLines(t, path)
@@ -134,7 +184,7 @@ func TestVerify_DetectsForgedEntry(t *testing.T) {
 		t.Fatalf("unmarshal entry 2: %v", err)
 	}
 	e.Args = json.RawMessage(`{"scope":"prod"}`) // the forgery
-	c, err := e.payload.canonical()
+	c, err := e.canonical()
 	if err != nil {
 		t.Fatalf("canonical: %v", err)
 	}
@@ -171,7 +221,7 @@ func TestVerify_WrongKey(t *testing.T) {
 	_, wrongPub := newTestKey(t)
 	l := openLog(t, path, "sess-1", priv)
 	appendCall(t, l, "read_file", `{}`, `{}`)
-	l.Close()
+	closeLog(t, l)
 
 	res, err := Verify(path, wrongPub)
 	if err != nil {
@@ -194,7 +244,7 @@ func TestVerify_DetectsDeletion(t *testing.T) {
 	appendCall(t, l, "one", `{}`, `{}`)
 	appendCall(t, l, "two", `{}`, `{}`)
 	appendCall(t, l, "three", `{}`, `{}`)
-	l.Close()
+	closeLog(t, l)
 
 	// Delete the middle entry (the one that called "two").
 	lines := readLines(t, path)
@@ -225,11 +275,11 @@ func TestResumeChain(t *testing.T) {
 	l1 := openLog(t, path, "sess-1", priv)
 	appendCall(t, l1, "one", `{}`, `{}`)
 	last := appendCall(t, l1, "two", `{}`, `{}`)
-	l1.Close()
+	closeLog(t, l1)
 
 	l2 := openLog(t, path, "sess-2", priv) // a second run, same file and key
 	resumed := appendCall(t, l2, "three", `{}`, `{}`)
-	l2.Close()
+	closeLog(t, l2)
 
 	if resumed.Seq != 3 {
 		t.Errorf("resumed seq = %d, want 3", resumed.Seq)
@@ -259,7 +309,7 @@ func TestAppend_RecordsErrorResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	l.Close()
+	closeLog(t, l)
 
 	if e.Result != nil {
 		t.Errorf("Result = %s, want nil for an errored call", e.Result)
@@ -282,7 +332,7 @@ func TestAppend_NilArgsBecomeNull(t *testing.T) {
 	if _, err := l.Append("no_args", nil, json.RawMessage(`{}`), nil, DecisionAllow); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	l.Close()
+	closeLog(t, l)
 
 	data := bytes.TrimSpace(readFile(t, path))
 	var e struct {

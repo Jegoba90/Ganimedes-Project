@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"unicode/utf16"
+
+	"github.com/Jegoba90/Ganimedes-Project/internal/jsoncheck"
 )
 
 // canonicalizeJSON returns the RFC 8785 (JSON Canonicalization Scheme) form of
@@ -27,6 +29,12 @@ import (
 // outside the finite double range (it would decode to Inf) is rejected, since it
 // is not a valid JSON number.
 func canonicalizeJSON(raw []byte) ([]byte, error) {
+	// RFC 8785 forbids duplicate names and malformed Unicode. encoding/json
+	// alone would discard earlier members or replace invalid text, giving
+	// conflicting payloads the same seal instead of refusing them.
+	if err := jsoncheck.Validate(raw); err != nil {
+		return nil, fmt.Errorf("validating JSON to canonicalize: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber() // keep number literals exact until we format them per JCS
 	var v any
