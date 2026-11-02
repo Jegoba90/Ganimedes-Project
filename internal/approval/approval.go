@@ -32,6 +32,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net"
@@ -89,6 +90,9 @@ type Server struct {
 
 	httpSrv *http.Server
 	url     string
+	page    *template.Template
+	done    chan struct{}
+	close   sync.Once
 
 	// csrfToken is a random, unguessable value generated once by New and
 	// embedded as a hidden field in every rendered form (see pageHTML).
@@ -146,7 +150,7 @@ func newPendingID() string {
 // loopback address, Art. 2.2) and give each request at most timeout to be
 // answered before it fails closed. It does not start listening; call Start.
 func New(addr string, timeout time.Duration) (*Server, error) {
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, fmt.Errorf("approval: invalid address %q: %w", addr, err)
 	}
@@ -160,10 +164,22 @@ func New(addr string, timeout time.Duration) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("approval: %w", err)
 	}
+	page, err := template.New("page").Parse(pageHTML)
+	if err != nil {
+		return nil, fmt.Errorf("approval: parsing page template: %w", err)
+	}
+	// localhost is accepted as a convenience, but the bind must not depend on
+	// name resolution: even a changed hosts file must not expose this page on a
+	// non-loopback interface (Art. 2.2).
+	if host == "localhost" {
+		addr = net.JoinHostPort("127.0.0.1", port)
+	}
 	return &Server{
 		addr:      addr,
 		timeout:   timeout,
 		csrfToken: token,
+		page:      page,
+		done:      make(chan struct{}),
 		pendings:  make(map[string]*pending),
 	}, nil
 }
@@ -196,8 +212,12 @@ func (s *Server) Start() error {
 
 	s.url = "http://" + ln.Addr().String() + "/"
 	s.httpSrv = &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second, // bound the header read (gosec G112)
+		Handler:           protectHTTP(ln.Addr().String(), mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    16 << 10,
 	}
 	go func() {
 		// Serve blocks until Close, which makes it return ErrServerClosed; that is
@@ -205,6 +225,27 @@ func (s *Server) Start() error {
 		_ = s.httpSrv.Serve(ln)
 	}()
 	return nil
+}
+
+// protectHTTP keeps a browser's origin boundary meaningful. Loopback binding
+// alone does not stop DNS rebinding: a domain controlled by an attacker can
+// resolve to loopback while retaining that domain as its HTTP Host, letting its
+// script read the page and CSRF token. Only the authority printed in URL is
+// served. Anti-frame headers stop a hostile page from disguising the real
+// approval button in an iframe, where the legitimate token would accompany an
+// unintended click. The page carries sensitive arguments and must not be cached.
+func protectHTTP(authority string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if r.Host != authority {
+			http.Error(w, "unexpected Host; use the advertised approval URL", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // URL is the address of the approval page, valid after Start. Log it to stderr
@@ -237,6 +278,8 @@ func (s *Server) Request(tool string, args json.RawMessage) Outcome {
 	case out = <-p.ch:
 	case <-timer.C:
 		out = TimedOut
+	case <-s.done:
+		out = TimedOut
 	}
 
 	// Remove the pending in all cases: a resolved one is done, a timed-out one must
@@ -267,6 +310,9 @@ func (s *Server) resolve(id string, out Outcome) {
 // Close shuts the HTTP server down gracefully, bounded by ctx. After Close the
 // Server must not be reused. It is safe to call even if Start was never reached.
 func (s *Server) Close(ctx context.Context) error {
+	// Closing the HTTP listener must also release callers waiting for a click;
+	// otherwise a long configured approval timeout outlives session shutdown.
+	s.close.Do(func() { close(s.done) })
 	if s.httpSrv == nil {
 		return nil
 	}
@@ -304,7 +350,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Best-effort render: the template is static and validated at init, and the
 	// model holds only strings/ints, so Execute does not fail in practice; if the
 	// client disconnects mid-write there is nothing useful to do about it.
-	_ = pageTemplate.Execute(w, pageData{Items: items, CSRFToken: s.csrfToken})
+	_ = s.page.Execute(w, pageData{Items: items, CSRFToken: s.csrfToken})
 }
 
 // handleDecision resolves one pending approval from the page's form POST and
@@ -320,8 +366,14 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxDecisionBody)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			http.Error(w, "decision form too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "bad form", http.StatusBadRequest)
+		}
 		return
 	}
 	if !validToken(r.FormValue("csrf_token"), s.csrfToken) {
@@ -345,6 +397,11 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	s.resolve(id, out)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
+
+// A decision contains only an opaque id, a token and an action. Bounding its
+// body prevents a browser from making the local server buffer megabytes for a
+// request that can never be a legitimate click.
+const maxDecisionBody = 8 << 10
 
 // validToken reports whether got matches want, using a constant-time
 // comparison so a mistaken or forged token cannot be narrowed down one byte at
@@ -385,10 +442,6 @@ func prettyJSON(raw json.RawMessage) string {
 	}
 	return buf.String()
 }
-
-// pageTemplate is parsed once at init. Must panics on a malformed template, which
-// would be a programming error caught immediately rather than per request.
-var pageTemplate = template.Must(template.New("page").Parse(pageHTML))
 
 // pageHTML is the approval page. It refreshes every 2 seconds (a meta refresh, no
 // JavaScript) so a newly paused call appears without the reviewer reloading, and
