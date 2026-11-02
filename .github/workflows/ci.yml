@@ -49,7 +49,11 @@ jobs:
         run: go vet ./...
 
       - name: 🧪 Test (coverage, all platforms)
-        run: go test ./... -coverprofile=coverage.out
+        # Quoted on purpose: Windows runs this step in pwsh, which splits an
+        # unquoted -coverprofile=coverage.out at the dot and hands go test
+        # "-coverprofile=coverage" and ".out". The profile then lands in a file
+        # named "coverage" and the floors step finds nothing to read.
+        run: go test ./... "-coverprofile=coverage.out"
 
       - name: Coverage floors (Art. 4.2)
         shell: pwsh
