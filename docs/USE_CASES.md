@@ -19,8 +19,10 @@
   it live.
 - **Without Ganimedes:** the only record is whatever the agent chooses to
   summarize, or whatever logs the model provider happens to keep.
-- **With Ganimedes:** every `tools/call` is written to the local hash-chained
-  audit log. `ganimedes verify` proves the log was not edited after the fact.
+- **With Ganimedes:** completed `tools/call` exchanges and blocked attempts are
+  written to the local hash-chained audit log. `ganimedes verify` checks its chain
+  and signatures. Unanswered calls, failed appends and tail truncation limit what
+  the absence of a record can prove.
 - **v0 feature:** audit log
 
 ### 2. Preventing an accidental destructive action
@@ -67,8 +69,8 @@
   what they claim to do.
 - **Without Ganimedes:** trust the server blindly.
 - **With Ganimedes:** run it through the gateway first. The audit log shows
-  every call it makes; the deny-list acts as training wheels while evaluating
-  it.
+  completed calls the client sends through it; the deny-list governs those calls
+  while evaluating it. The wrapped process itself is not sandboxed.
 - **v0 feature:** audit log + deny-list
 
 ## Later (not v0, listed to keep scope honest)

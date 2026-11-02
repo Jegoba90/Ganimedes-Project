@@ -23,11 +23,12 @@ about every action an agent takes:
 
 In v0 that is one small gateway wrapping a single MCP server: allowed calls are
 forwarded, denied ones are blocked with an error, flagged ones pause for human
-approval on a local page, and every call is written to a tamper-evident log.
+approval on a local page. Completed calls and blocked attempts are written to a
+tamper-evident log; unanswered calls and failed appends are not complete records.
 
 <p align="center">
   <img src="assets/architecture.svg" width="820"
-       alt="Ganimedes sits inline as an MCP gateway between the agent and the real MCP server. On the agent side every tools/call is inspected and then allowed, denied, or held for human approval; a denied call turns back at the gateway with a JSON-RPC -32000 error and never reaches the server, and that error is the one message Ganimedes composes rather than forwards. Human approval sits outside the binary, on a localhost page, joined to the policy step by a dashed link because the person may not be there when the call is held. On the server side traffic is watched and recorded rather than policed. The log opens with the rules in force, and every call is signed into it.">
+       alt="Ganimedes sits inline as an MCP gateway between the agent and the real MCP server. On the agent side every tools/call is inspected and then allowed, denied, or held for human approval; a denied call turns back at the gateway with a JSON-RPC -32000 error and never reaches the server, and that error is the one message Ganimedes composes rather than forwards. Human approval sits outside the binary, on a localhost page, joined to the policy step by a dashed link because the person may not be there when the call is held. On the server side traffic is watched and recorded rather than policed. The log opens with the rules in force, and completed calls and blocked attempts are signed into it.">
 </p>
 
 ## See it in thirty seconds
@@ -87,10 +88,10 @@ was called inside.
 
 ## What you get
 
-One line per tool call, appended the moment the call happens, and one line at the
+One line per completed tool call or blocked attempt, and one line at the
 start of every run stating what the gateway was and which rules it was holding.
 That second job is the whole product by default: configure nothing and Ganimedes
-blocks nothing and records everything, which makes it less a doorman than a
+blocks no valid call by tool name and records completed calls, which makes it less a doorman than a
 notary. It does not tell you who may enter. It tells you who did.
 
 This is a real log, wrapped here to fit the page (in the file each entry is a
@@ -120,8 +121,9 @@ Then the agent asks that server to write a file:
  "sig":"JPLt8uytK4I5iz4nqrB3ypQZPpvvpOd9Q33x4QP5GAvFlLHczxu19DyJjPa9IT5B2rnGk4tI7gLYOWkU5cgjBQ=="}
 ```
 
-`tool`, `args` and `result` are what the agent did, kept verbatim as they
-crossed the wire. `decision` is what Ganimedes did about it: `allow`, `deny`,
+`tool`, `args` and `result` hold the observed JSON values. The log encoder may
+compact whitespace or escape HTML; forwarded wire bytes stay unchanged.
+`decision` is what Ganimedes did about it: `allow`, `deny`,
 `approved`, `rejected`, or `timeout` when nobody answered in time. `prev_hash`
 and `hash` chain each entry to the one before it, and `sig` signs it, which is
 what makes an edit to past history detectable instead of merely discouraged.
@@ -141,13 +143,13 @@ That last clause carries more weight than its size. A client brings tools of its
 own and will prefer them: asked in plain language to read a file, Claude Code
 used its own reader and never consulted the wrapped filesystem server, which left
 the log empty while the agent worked normally. An empty log is not evidence of an
-idle agent. It is evidence that nothing went through this server, which is a
-narrower statement than it first reads as. Naming the wrapped server's tool
+idle agent or proof that no request reached this server: unanswered calls and
+append failures can also leave gaps. Naming the wrapped server's tool
 explicitly is what routes a call through the gateway, and it is also how to check
 that yours is working.
 
-What it does record deserves saying just as plainly: arguments and results,
-verbatim. If the agent reads a file holding a token, that token is now in the
+What it does record deserves saying just as plainly: full argument and result
+values. If the agent reads a file holding a token, that token is now in the
 log, which makes the log as sensitive as the traffic that produced it. Ganimedes
 creates it `0600`, which POSIX honours and Windows does not, so on Windows what
 protects the file is the directory you keep it in. Redaction is a later feature
@@ -314,7 +316,7 @@ ganimedes run -- npx -y @modelcontextprotocol/server-filesystem ./data
 ```
 
 Nothing changes for the agent, because allowed calls are forwarded untouched.
-What changes is that every `tools/call` is now recorded in
+What changes is that completed `tools/call` exchanges and blocked attempts are recorded in
 `ganimedes-audit.jsonl`, in the directory you ran the command from. The signing
 key is generated there too on first run:
 
@@ -445,6 +447,41 @@ that would not come up. Give that one its own with `--approval-addr
 127.0.0.1:8766`.
 
 `ganimedes help` lists every command and flag.
+
+Each audit log permits one writer. A second gateway needs its own `--log` path
+as well as its own approval port; started on a log already in use, it exits
+with an error naming the log. The lock is held by the operating system and goes
+away with the process, even when the client kills it, so there is nothing to
+clean up before restarting. Startup verifies the existing chain with the signing key and refuses
+corrupt history or a missing final newline. Preserve the original file and
+recover it offline; Ganimedes never silently repairs signed history.
+
+New call records include a signed `content_hash` that also binds the exact
+numeric representation of arguments, results and errors after JSON encoding.
+Older records without that field retain RFC 8785's IEEE-754 equivalence: certain
+large-integer or high-precision numeric edits cannot be distinguished in them.
+Keep their original files and trusted external digests if that distinction matters.
+
+Use the exact approval URL printed on stderr. The HTTP service checks its Host,
+requires a per-run CSRF token, prevents framing, and disables page caching. It
+still has no user authentication: another local process that can read the page
+can also submit a decision. Decision bodies are limited to 8 KiB and HTTP reads
+and writes have deadlines.
+
+Protocol messages are limited to 16 MiB per line. When auditing, at most 1024
+request ids and 64 MiB of retained id/tool/argument data can be pending; a call
+that exceeds those limits is refused. Duplicate JSON members, invalid Unicode,
+malformed requests and `tools/call` notifications are refused rather than passed
+without a policy decision. Numeric ids and escaped spellings of string ids are
+compared by decoded value.
+
+`scan` follows every `tools/list` page, with a 15-second overall deadline,
+16 MiB per message, 64 MiB of server output and 1024 pages. An invalid response,
+cursor cycle or exceeded limit fails the scan; it never reports a partial list
+as a successful scan. Server-supplied tool names are quoted in the report.
+
+Building from source requires **Go 1.26.10 or newer** to include the standard
+library security fixes. No third-party runtime module is required.
 
 ## v0 scope
 

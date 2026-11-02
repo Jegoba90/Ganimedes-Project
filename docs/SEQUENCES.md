@@ -6,11 +6,19 @@
 > syntax, which GitHub renders natively in markdown, so the diagrams stay
 > plain text and diffable in git instead of drifting screenshots.
 
-**Scope of interception:** Ganimedes only inspects `tools/call`. Every other
+**Scope of policy:** Ganimedes evaluates tool permissions only for `tools/call`. Every valid other
 message (`initialize`, `tools/list`, `resources/*`, `prompts/*`, notifications)
 and every error returned by the real server is pure passthrough, forwarded
 unchanged. Policy is **default-allow**: only tools on the deny-list or the
 approval-list are treated specially.
+
+With inspection active, client envelopes must first be unambiguous JSON-RPC
+2.0. Duplicate members, invalid Unicode, malformed/scalar frames and tool
+notifications are refused; this validation never rewrites an accepted frame.
+Each direction permits 16 MiB per line. Pending correlation retains at most
+1024 ids and 64 MiB of id/tool/argument bytes; unrelated requests reserve ids
+without generating tool entries. Semantically equal numeric/string-escaped ids
+share a reservation. Server-initiated requests cannot complete client calls.
 
 ## 1. Transparent passthrough ✅ *(implemented in v0)*
 
@@ -57,9 +65,9 @@ sequenceDiagram
     C->>G: tools/call "search_files" (request, id=7)
     G->>S: tools/call "search_files" (forwarded)
     S-->>G: result
+    G-->>C: result (forwarded, id=7)
     G->>A: append full entry (tool, args, result) + prev_hash
     A-->>G: entry hash (SHA-256 of canonical entry)
-    G-->>C: result (forwarded, id=7)
 ```
 
 ## 3. Deny-list ✅ *(implemented in v0)*
@@ -86,11 +94,11 @@ sequenceDiagram
     alt ALLOW (default: tool not on deny-list)
         G->>S: tools/call (forwarded)
         S-->>G: result
-        G->>A: append full entry (decision=ALLOW)
         G-->>C: result (forwarded)
+        G->>A: append full entry (decision=ALLOW)
     else DENY (tool on deny-list, e.g. "db.dropTable")
-        G->>A: append full entry (decision=DENY)
         G-->>C: JSON-RPC error (denied by policy)
+        G->>A: append full entry (decision=DENY)
         Note over S: the real server never sees this call
     end
 ```
@@ -124,12 +132,12 @@ sequenceDiagram
         H-->>G: APPROVED
         G->>S: tools/call "email.send" (forwarded)
         S-->>G: result
-        G->>A: append full entry (decision=APPROVED)
         G-->>C: result (forwarded)
+        G->>A: append full entry (decision=APPROVED)
     else Rejected or timeout
         H-->>G: REJECTED / TIMEOUT
-        G->>A: append full entry (decision=REJECTED or TIMEOUT)
         G-->>C: JSON-RPC error (rejected by human / timed out, naming the page)
+        G->>A: append full entry (decision=REJECTED or TIMEOUT)
     end
 ```
 
