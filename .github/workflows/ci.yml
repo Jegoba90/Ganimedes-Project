@@ -1,6 +1,7 @@
 name: 🛡️ CI
 
 on:
+  workflow_call:
   push:
     branches: [ main ]
   pull_request:
@@ -8,8 +9,11 @@ on:
 
 # Cancels stale runs when new commits land on the same branch/PR.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-ci-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   # --- BUILD, VET, TEST (cross-platform: this ships as a binary for all three) ---
@@ -30,10 +34,10 @@ jobs:
       # linker, which always emits LC_UUID.
       CGO_ENABLED: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -45,14 +49,19 @@ jobs:
         run: go vet ./...
 
       - name: 🧪 Test (coverage, all platforms)
-        run: go test ./... -cover
+        run: go test ./... -coverprofile=coverage.out
+
+      - name: Coverage floors (Art. 4.2)
+        shell: pwsh
+        run: ./.github/scripts/check-coverage.ps1
 
       # The race detector needs cgo + a C compiler. Run it on Linux only: cgo
       # test binaries build and run cleanly there. Windows has no default C
       # compiler, and a cgo binary on the macOS runner hits the LC_UUID/dyld
       # issue noted above. Cross-platform functional coverage is already done by
       # the cgo-free test step above; data races are OS-independent, so Linux
-      # race coverage catches them.
+      # race coverage exercises the shared concurrency paths; platform-specific
+      # races still require a supported runner to investigate.
       - name: 🏁 Test (race detector, Linux)
         if: runner.os == 'Linux'
         env:
@@ -64,10 +73,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
@@ -81,29 +90,31 @@ jobs:
           fi
 
       - name: 🧹 golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@db9de0fc1a667e1a49d2291a1a042dff081d78f6 # v9
+        with:
+          version: v2.15.0
 
   # --- SECURITY AUDIT ---
   security-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # full history so Gitleaks can scan every new commit
 
       - name: 🕵️ Gitleaks (Secret Scanning)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
       - name: 🛑 govulncheck (Go vulnerability DB, call-graph aware)
-        uses: golang/govulncheck-action@v1
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
 
       - name: 🛡️ Trivy Scan (Filesystem)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -112,6 +123,7 @@ jobs:
           ignore-unfixed: true
           format: 'table'
           severity: 'HIGH,CRITICAL'
+          exit-code: '1'
 
   # --- SAST: CodeQL (source code analysis, not just dependencies) ---
   codeql-sast:
@@ -122,15 +134,15 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
         with:
           languages: go
 
       - name: 🔬 CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
         with:
           category: "/language:go"
           # Findings go to the repository's Security tab. That needs GitHub
@@ -143,7 +155,5 @@ jobs:
   # Ganimedes ships as a binary, not a Docker image, so there is nothing to
   # build and scan here (unlike CryptoCapi's backend/collector images).
 
-  # --- E2E: N/A ---
-  # No web UI in v0 (see docs/USE_CASES.md). Same reasoning as CryptoCapi's
-  # disabled Playwright job, just without the job existing at all instead of
-  # being toggled off.
+  # Approval HTTP handlers are covered by hermetic tests. A real-browser smoke
+  # remains a separate manual check; no browser E2E job runs in this workflow.

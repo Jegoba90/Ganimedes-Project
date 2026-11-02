@@ -21,7 +21,17 @@ concurrency:
   cancel-in-progress: false # never abort a half-published release
 
 jobs:
+  # A tag can point at a commit whose main-branch checks never ran. Reuse the
+  # whole gate at this exact ref before a job receives publishing credentials.
+  quality:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+
   release:
+    needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -35,10 +45,10 @@ jobs:
       CGO_ENABLED: "0"
       MODULE: github.com/Jegoba90/Ganimedes-Project
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -53,6 +63,14 @@ jobs:
           set -euo pipefail
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             version="${GITHUB_REF_NAME}"
+            if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release tags must have the form vX.Y.Z"
+              exit 1
+            fi
+            if [ ! -f "docs/release-notes/${version}.md" ]; then
+              echo "::error::missing required release notes for ${version}"
+              exit 1
+            fi
           else
             version="0.0.0-dev+$(git rev-parse --short HEAD)"
           fi
@@ -63,9 +81,8 @@ jobs:
           echo "prefix=ganimedes_${version}" >> "$GITHUB_OUTPUT"
           echo "Building version ${version}"
 
-      # CI already ran the full three-OS gate on `main`. This is the last line of
-      # defence: never cut artifacts from code whose tests were not run at the
-      # exact commit being shipped (Art. 4.3, no bypass).
+      # The reusable quality job passed at this ref. Repeat the fast runtime
+      # checks immediately before building artifacts in the publishing job.
       - name: 🧪 Test the exact commit being shipped
         run: |
           set -euo pipefail
@@ -172,7 +189,7 @@ jobs:
       # pipeline has already taught is that a step gated on tags is a step
       # nobody has ever run.
       - name: 🧾 Attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           # The six binaries, by the same prefix the rest of the workflow uses.
           # SHA256SUMS is left out on purpose: it is a convenience file, and the
@@ -181,7 +198,7 @@ jobs:
 
       # Kept for dry runs and as a fallback copy of what a tag published.
       - name: 📦 Upload artifacts to the run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ganimedes-${{ steps.version.outputs.version }}
           path: dist/
@@ -209,7 +226,8 @@ jobs:
             { echo; cat "${notes}"; } >> release-notes.md
             echo "spliced in ${notes}"
           elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "::warning::no release notes at ${notes}; publishing the boilerplate only"
+            echo "::error::missing required release notes at ${notes}"
+            exit 1
           else
             echo "dry run: no notes file for a dev version, as expected"
           fi
