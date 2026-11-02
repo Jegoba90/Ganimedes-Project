@@ -12,6 +12,7 @@ package cli
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -225,7 +226,13 @@ func runCommand(args []string) int {
 		fmt.Fprintf(os.Stderr, "run: %v\n", err)
 		return 1
 	}
-	defer log.Close()
+	defer func() {
+		if err := log.Close(); err != nil {
+			// Auditing remains an observer after startup, but some file systems
+			// report deferred write errors only at close; the operator should know.
+			fmt.Fprintf(os.Stderr, "run: closing audit log: %v\n", err)
+		}
+	}()
 
 	// The session header goes in before any traffic: it declares what this run
 	// wrapped and which rules are in force, so the log answers "under what rules"
@@ -342,7 +349,10 @@ func scanCommand(args []string) int {
 		fmt.Fprintf(os.Stderr, "scan: %v\n", err)
 		return 1
 	}
-	scan.Render(os.Stdout, report, cfg.Command)
+	if err := scan.Render(os.Stdout, report, cfg.Command); err != nil {
+		fmt.Fprintf(os.Stderr, "scan: %v\n", err)
+		return 1
+	}
 	return 0
 }
 
@@ -411,20 +421,23 @@ func resolveSigningKeyPath(flag string) string {
 
 // resolvePublicKey finds the public key verify should check against. An explicit
 // --pubkey wins (this is the offline path: only the public key is needed). On the
-// same host as run, the public key sits at the default .pub path; failing that,
-// it is derived from the default signing key if that is present.
+// same host as run, the public key sits beside the configured signing key
+// (including GANIMEDES_SIGNING_KEY); failing that, derive it from that key.
 func resolvePublicKey(pubkeyFlag string) (ed25519.PublicKey, error) {
 	if pubkeyFlag != "" {
 		return audit.LoadPublicKey(pubkeyFlag)
 	}
-	pubPath := audit.PublicKeyPath(defaultSigningKeyPath)
+	keyPath := resolveSigningKeyPath("")
+	pubPath := audit.PublicKeyPath(keyPath)
 	if _, err := os.Stat(pubPath); err == nil {
 		return audit.LoadPublicKey(pubPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("checking public key %q: %w", pubPath, err)
 	}
-	if priv, err := audit.LoadSigningKey(defaultSigningKeyPath); err == nil {
+	if priv, err := audit.LoadSigningKey(keyPath); err == nil {
 		pub, ok := priv.Public().(ed25519.PublicKey)
 		if !ok {
-			return nil, fmt.Errorf("signing key %q did not yield an ed25519 public key", defaultSigningKeyPath)
+			return nil, fmt.Errorf("signing key %q did not yield an ed25519 public key", keyPath)
 		}
 		return pub, nil
 	}
@@ -441,7 +454,9 @@ func notImplemented(name string) int {
 // printUsage writes a short help text to w. The caller picks the stream: stdout
 // when the help was requested, stderr when it accompanies a usage error.
 func printUsage(w io.Writer) {
-	fmt.Fprint(w, `ganimedes - the control and security layer for autonomous AI agents
+	// Usage is best-effort human output. A closed help pipe cannot corrupt a
+	// protocol session or change the usage error the caller is already returning.
+	_, _ = fmt.Fprint(w, `ganimedes - the control and security layer for autonomous AI agents
 
 Usage:
   ganimedes <command> [flags]
