@@ -10,10 +10,12 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
+
+	"github.com/Jegoba90/Ganimedes-Project/internal/jsoncheck"
 )
 
 // Config describes how Ganimedes should run: which downstream MCP server to
@@ -46,28 +48,52 @@ type Config struct {
 //
 // Unknown fields are rejected (DisallowUnknownFields): in a security tool a
 // mistyped key such as "denny" must fail loudly rather than silently leave the
-// deny-list empty and every tool allowed. Load does not require Command to be
+// deny-list empty and every tool allowed. Duplicate members and invalid Unicode
+// are also rejected: a second spelling of a policy field must not silently
+// replace the rule a reader saw first. Load does not require Command to be
 // set — the CLI may supply it instead — so validation of the final, merged
 // configuration is the caller's job.
 func Load(path string) (Config, error) {
-	f, err := os.Open(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("opening config %q: %w", path, err)
 	}
-	defer f.Close()
+	if err := jsoncheck.Validate(raw); err != nil {
+		return Config{}, fmt.Errorf("parsing config %q: %w", path, err)
+	}
+	if err := validateFields(raw); err != nil {
+		return Config{}, fmt.Errorf("parsing config %q: %w", path, err)
+	}
 
-	dec := json.NewDecoder(f)
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 
 	var c Config
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("parsing config %q: %w", path, err)
 	}
-	// Reject trailing content after the JSON object so a file that is two
-	// concatenated objects (a likely copy-paste mistake) is an error, not a
-	// silently-ignored second half.
-	if _, err := dec.Token(); err != io.EOF {
-		return Config{}, fmt.Errorf("parsing config %q: unexpected data after the JSON object", path)
-	}
 	return c, nil
+}
+
+// validateFields rejects null at the root and accepts only the exact on-disk
+// field names. encoding/json deliberately accepts null into a struct and
+// matches names without case sensitivity; neither behavior belongs in a policy
+// file whose rules must be unambiguous. JSON syntax, duplicate members and
+// string validity were already checked by jsoncheck.
+func validateFields(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return fmt.Errorf("config must be a JSON object")
+	}
+	for key := range fields {
+		switch key {
+		case "command", "args", "deny", "approve":
+		default:
+			return fmt.Errorf("unknown config field %q", key)
+		}
+	}
+	return nil
 }
