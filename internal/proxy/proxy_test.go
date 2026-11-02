@@ -433,11 +433,9 @@ func TestTimeoutMessage(t *testing.T) {
 	}
 }
 
-// TestIsJSONArray pins the discrimination handleRequest relies on: a batch
-// (any syntactically valid JSON array, empty or not) must be told apart from
-// every other shape a line could fail the single-message parse for, since the
-// two get opposite treatment -- a batch is refused, anything else is still
-// forwarded blind exactly as before.
+// TestIsJSONArray keeps the batch refusal distinct from other malformed input:
+// a batch has recoverable request ids and an array-shaped reply, while another
+// invalid frame gets one refusal with a null id. Neither may bypass inspection.
 func TestIsJSONArray(t *testing.T) {
 	cases := []struct {
 		name string
@@ -565,7 +563,11 @@ func TestRun_RefusesJSONRPCBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit.Open: %v", err)
 	}
-	defer log.Close() // idempotent; keeps an early t.Fatal from wedging TempDir cleanup
+	defer func() {
+		if err := log.Close(); err != nil {
+			t.Errorf("closing audit log: %v", err)
+		}
+	}() // idempotent; keeps an early t.Fatal from wedging TempDir cleanup
 
 	batch := []map[string]any{
 		{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "safe_tool", "arguments": map[string]any{}}},
@@ -701,10 +703,10 @@ func TestPending_Remember_RejectsCollision(t *testing.T) {
 	p := newPending()
 	id := json.RawMessage("1")
 
-	if ok := p.remember(id, "first_tool", nil, audit.DecisionAllow); !ok {
+	if err := p.remember(id, "first_tool", nil, audit.DecisionAllow); err != nil {
 		t.Fatal("first remember for a fresh id should succeed")
 	}
-	if ok := p.remember(id, "second_tool", nil, audit.DecisionAllow); ok {
+	if err := p.remember(id, "second_tool", nil, audit.DecisionAllow); err == nil {
 		t.Fatal("second remember for the same in-flight id should be refused")
 	}
 
@@ -721,9 +723,10 @@ func TestPending_Remember_RejectsCollision(t *testing.T) {
 	// The delete is done directly here so this stays a test of remember alone;
 	// TestHandleRequest_RejectsIDReuse drives the real recordResponse path.
 	p.mu.Lock()
+	p.bytes -= p.calls[idKey(id)].size
 	delete(p.calls, idKey(id))
 	p.mu.Unlock()
-	if ok := p.remember(id, "third_tool", nil, audit.DecisionAllow); !ok {
+	if err := p.remember(id, "third_tool", nil, audit.DecisionAllow); err != nil {
 		t.Error("remember for an id whose earlier call already completed should succeed")
 	}
 }
@@ -745,7 +748,11 @@ func TestHandleRequest_RejectsIDReuse(t *testing.T) {
 	// Close is idempotent, so the explicit Close below still reports a real
 	// failure; this one only keeps an early t.Fatal from leaving the file open,
 	// which on Windows makes TempDir cleanup fail and bury the actual error.
-	defer log.Close()
+	defer func() {
+		if err := log.Close(); err != nil {
+			t.Errorf("closing audit log: %v", err)
+		}
+	}()
 
 	eng := policy.New(nil, nil) // default-allow: both calls clear policy
 	p := newPending()
@@ -800,7 +807,11 @@ func TestHandleRequest_AllowsIDReuseAfterCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit.Open: %v", err)
 	}
-	defer log.Close()
+	defer func() {
+		if err := log.Close(); err != nil {
+			t.Errorf("closing audit log: %v", err)
+		}
+	}()
 
 	eng := policy.New(nil, nil)
 	p := newPending()
@@ -829,11 +840,15 @@ func TestHandleApproval_RejectsIDReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit.Open: %v", err)
 	}
-	defer log.Close()
+	defer func() {
+		if err := log.Close(); err != nil {
+			t.Errorf("closing audit log: %v", err)
+		}
+	}()
 
 	p := newPending()
 	// Occupy id=1 first, the way an already-forwarded allowed call would.
-	if ok := p.remember(json.RawMessage("1"), "already_in_flight", nil, audit.DecisionAllow); !ok {
+	if err := p.remember(json.RawMessage("1"), "already_in_flight", nil, audit.DecisionAllow); err != nil {
 		t.Fatal("setup: first remember should succeed")
 	}
 
