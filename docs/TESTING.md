@@ -249,6 +249,46 @@ worked outside MCP entirely. The README says the log covers "only the server it
 wraps", which is true and reads like a note about scope rather than the practical
 warning this is.
 
+#### Run of 2026-11-02, before tagging `v1.0.0`
+
+The first real-client run since the 2026-11-02 audit changed the request path,
+the log format and the approval page. The target was a local build of `main` at
+`7897c6a`, built with the release workflow's flags and stamped `v1.0.0-smoke`,
+wrapping `@modelcontextprotocol/server-filesystem@2026.8.31` through `npx` on
+Windows 11. The policy denied `move_file` and held `write_file` for approval. The
+agent was Claude Code 2.1.314 in print mode, given only that server
+(`--strict-mcp-config`), only its MCP tools, and the sandbox directory as its
+working directory so that the MCP Roots it offered matched the server argument.
+
+| Behavior | Evidence |
+|---|---|
+| `scan` against the real server | 14 tools, 4 flagged, the same as July. The first attempt failed; see below |
+| Allowed calls pass untouched | `read_text_file` returned the file's text verbatim to the agent |
+| Deny blocks before the server | The agent quoted `blocked by Ganimedes policy: tool "move_file" is on the deny-list`; `notes.txt` was not moved |
+| Approve in a browser | The file was written, logged `approved` |
+| Reject in a browser | The client got `-32000` `a human rejected the call to tool "write_file"`, the file never existed, logged `rejected`. Also checked by a scripted POST of the form, with the same result |
+| Host check in a real browser | `http://localhost:8767/` showed `unexpected Host; use the advertised approval URL` while `127.0.0.1:8767` served the page |
+| Anti-framing headers | `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY` and `Cache-Control: no-store` on the live page. Framing itself was not attempted |
+| New records are bound | Every call record carried `content_hash`; the 6-entry log verified intact |
+| Tampering is caught | `"decision":"deny"` edited to `"allow"` gave `TAMPERED: entry 3`, exit 1 |
+| `verify` refuses two logs | exit 2, naming both paths |
+
+**What it found.** The first `scan` ran while `npx -y` was still downloading
+the server, overran the 15-second deadline and failed, which is correct. Its
+message was not: `reading server response: read |0: file already closed`.
+Closing the pipes on expiry, the audit's fix for an inherited stdout, had turned
+the deadline into a bare read error. v0.3.3 at least asked "crashed or timed
+out?". The message now says the deadline passed and names the likely first-run
+download. `TestScan_TimeoutClosesInheritedOutput` asserts that wording, and
+`TestScan_ExitWithoutAnswerIsNotADeadline` asserts a crash is not blamed on the
+deadline. Each was seen to fail with its half of the check removed.
+
+**And one thing that was not a defect.** In the first approval run both writes
+went through. The log said `approved` twice, the two writes were 66 seconds
+apart, and the tester confirmed clicking Approve on the second. The log recorded
+exactly the click it received. Reject was then exercised in the browser as
+above.
+
 ### L4 — Adversarial / security-property tests
 
 **What:** the properties that matter *because this is a security tool*, tested
