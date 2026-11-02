@@ -4,3 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # codeql-action's init and analyze steps must run the same version, or
+    # analyze refuses the configuration init wrote. Updated separately, each
+    # Dependabot PR mixed v3 and v4 and failed CodeQL; grouped, they move together.
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
