@@ -22,16 +22,27 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Jegoba90/Ganimedes-Project/internal/config"
+	"github.com/Jegoba90/Ganimedes-Project/internal/jsoncheck"
 )
 
 // scanTimeout bounds the whole handshake so a server that never answers cannot
 // hang the scan (Constitution Art. 3.4). It covers process start plus the
 // initialize and tools/list round trips; a local MCP server needs far less.
 const scanTimeout = 15 * time.Second
+
+// A server controls both the size and number of discovery responses. Bound the
+// whole exchange as well as each line: a timeout alone still permits allocating
+// an arbitrarily large line before the timer fires (Art. 3.4).
+const (
+	maxMessageBytes = 16 << 20
+	maxScanBytes    = 64 << 20
+	maxScanPages    = 1024
+)
 
 // protocolVersion is the MCP protocol version scan advertises in initialize. It
 // is the widely-supported baseline; a server negotiates its own version in the
@@ -143,11 +154,17 @@ func riskFlags(t Tool) []string {
 // scanTimeout; the server is reaped before Scan returns whether the handshake
 // succeeded or not, so no child process is left behind.
 func Scan(cfg config.Config) (Report, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+	return scanWithContext(ctx, cfg)
+}
+
+func scanWithContext(ctx context.Context, cfg config.Config) (Report, error) {
 	if cfg.Command == "" {
 		return Report{}, errors.New("no server command to scan")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
@@ -164,6 +181,14 @@ func Scan(cfg config.Config) (Report, error) {
 	if err := cmd.Start(); err != nil {
 		return Report{}, fmt.Errorf("starting server %q: %w", cfg.Command, err)
 	}
+	// Killing the direct child does not close a pipe inherited by a descendant.
+	// Close our endpoints on expiry too, so discovery's blocked read/write cannot
+	// outlive the advertised deadline. The wrapped process is still reaped below.
+	stopClosing := context.AfterFunc(ctx, func() {
+		_ = serverIn.Close()  // cancellation cleanup; no further request is sent
+		_ = serverOut.Close() // unblock a read even if a descendant holds stdout
+	})
+	defer stopClosing()
 
 	tools, derr := discover(serverIn, serverOut)
 
@@ -172,7 +197,7 @@ func Scan(cfg config.Config) (Report, error) {
 	// killing a still-running helper keeps the command from lingering once the
 	// answer is in hand. A kill makes Wait return an error, which is expected
 	// here and deliberately ignored.
-	_ = serverIn.Close()
+	_ = serverIn.Close() // cleanup; the process is killed and reaped regardless
 	cancel()
 	_ = cmd.Wait()
 
@@ -193,7 +218,7 @@ func Scan(cfg config.Config) (Report, error) {
 // out from Scan (which owns the process) so the protocol logic can be tested
 // against an in-memory server with no subprocess.
 func discover(w io.Writer, r io.Reader) ([]Tool, error) {
-	br := bufio.NewReader(r)
+	br := bufio.NewReader(io.LimitReader(r, maxScanBytes))
 
 	// 1. initialize: establish the session before asking for anything.
 	if err := writeRequest(w, initializeID, "initialize", initializeParams()); err != nil {
@@ -213,25 +238,83 @@ func discover(w io.Writer, r io.Reader) ([]Tool, error) {
 		return nil, err
 	}
 
-	// 3. tools/list: the actual question scan asks.
-	if err := writeRequest(w, toolsListID, "tools/list", struct{}{}); err != nil {
-		return nil, err
+	// tools/list is paginated. Reporting only its first page can hide precisely
+	// the destructive tool the user ran scan to find. Cursors remain opaque and
+	// every page gets a fresh request id, so an old response cannot fill a new one.
+	var tools []Tool
+	seen := make(map[string]bool)
+	cursor := ""
+	for page := 0; page < maxScanPages; page++ {
+		id := strconv.Itoa(page + 2)
+		params := map[string]string{}
+		if page > 0 {
+			params["cursor"] = cursor
+		}
+		if err := writeRequest(w, id, "tools/list", params); err != nil {
+			return nil, err
+		}
+		resp, err := readResponse(br, id)
+		if err != nil {
+			return nil, err
+		}
+		if len(resp.Error) > 0 {
+			return nil, fmt.Errorf("server returned an error for tools/list: %s", resp.Error)
+		}
+		pageTools, next, err := parseToolsPage(resp.Result)
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, pageTools...)
+		if next == nil {
+			return tools, nil
+		}
+		if seen[*next] {
+			return nil, errors.New("tools/list repeated a pagination cursor")
+		}
+		seen[*next] = true
+		cursor = *next
 	}
-	listResp, err := readResponse(br, toolsListID)
-	if err != nil {
-		return nil, err
-	}
-	if len(listResp.Error) > 0 {
-		return nil, fmt.Errorf("server returned an error for tools/list: %s", listResp.Error)
-	}
+	return nil, fmt.Errorf("tools/list exceeded %d pages", maxScanPages)
+}
 
-	var result struct {
-		Tools []Tool `json:"tools"`
+// Parse exact member names instead of Go's case-insensitive struct matching.
+// An absent/null tool list is a protocol error, not evidence of zero tools.
+func parseToolsPage(raw json.RawMessage) ([]Tool, *string, error) {
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &result); err != nil || result == nil {
+		return nil, nil, errors.New("tools/list result must be an object")
 	}
-	if err := json.Unmarshal(listResp.Result, &result); err != nil {
-		return nil, fmt.Errorf("parsing tools/list result: %w", err)
+	list := bytes.TrimSpace(result["tools"])
+	if len(list) == 0 || list[0] != '[' {
+		return nil, nil, errors.New("tools/list result must contain a tools array")
 	}
-	return result.Tools, nil
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(list, &items); err != nil {
+		return nil, nil, fmt.Errorf("parsing tools/list result: %w", err)
+	}
+	tools := make([]Tool, 0, len(items))
+	for _, item := range items {
+		var tool Tool
+		if err := json.Unmarshal(item["name"], &tool.Name); err != nil || tool.Name == "" {
+			return nil, nil, errors.New("tools/list contains a tool without a nonempty name")
+		}
+		if description, ok := item["description"]; ok {
+			if bytes.Equal(bytes.TrimSpace(description), []byte("null")) {
+				return nil, nil, errors.New("tool description must be a string")
+			}
+			if err := json.Unmarshal(description, &tool.Description); err != nil {
+				return nil, nil, fmt.Errorf("parsing tool description: %w", err)
+			}
+		}
+		tools = append(tools, tool)
+	}
+	var next *string
+	if rawCursor, ok := result["nextCursor"]; ok {
+		if err := json.Unmarshal(rawCursor, &next); err != nil || next == nil {
+			return nil, nil, errors.New("tools/list nextCursor must be a string")
+		}
+	}
+	return tools, next, nil
 }
 
 // initParams is the initialize request's params. Ganimedes advertises no
@@ -292,8 +375,10 @@ func writeMessage(w io.Writer, m rpcMessage) error {
 		return fmt.Errorf("encoding %s message: %w", m.Method, err)
 	}
 	b = append(b, '\n')
-	if _, err := w.Write(b); err != nil {
+	if n, err := w.Write(b); err != nil {
 		return fmt.Errorf("sending %s: %w", m.Method, err)
+	} else if n != len(b) {
+		return fmt.Errorf("sending %s: %w", m.Method, io.ErrShortWrite)
 	}
 	return nil
 }
@@ -305,13 +390,25 @@ func writeMessage(w io.Writer, m rpcMessage) error {
 // EOF before a match means the server closed its output without answering.
 func readResponse(br *bufio.Reader, wantID string) (rpcResponse, error) {
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := readLine(br)
+		if err != nil && err != io.EOF {
+			return rpcResponse{}, fmt.Errorf("reading server response: %w", err)
+		}
 		if len(bytes.TrimSpace(line)) > 0 {
-			var resp rpcResponse
-			if json.Unmarshal(line, &resp) == nil &&
-				len(resp.ID) > 0 &&
-				string(bytes.TrimSpace(resp.ID)) == wantID {
-				return resp, nil
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(line, &fields) == nil &&
+				string(bytes.TrimSpace(fields["id"])) == wantID {
+				if err := jsoncheck.Validate(line); err != nil {
+					return rpcResponse{}, fmt.Errorf("invalid server response: %w", err)
+				}
+				var version string
+				_ = json.Unmarshal(fields["jsonrpc"], &version) // wrong types fail the version check
+				result, hasResult := fields["result"]
+				rpcErr, hasError := fields["error"]
+				if version != "2.0" || hasResult == hasError || fields["method"] != nil {
+					return rpcResponse{}, errors.New("invalid JSON-RPC response envelope")
+				}
+				return rpcResponse{ID: fields["id"], Result: result, Error: rpcErr}, nil
 			}
 		}
 		if err != nil {
@@ -323,43 +420,68 @@ func readResponse(br *bufio.Reader, wantID string) (rpcResponse, error) {
 	}
 }
 
+func readLine(br *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		part, err := br.ReadSlice('\n')
+		if len(line)+len(part) > maxMessageBytes {
+			return nil, fmt.Errorf("server message exceeds %d bytes", maxMessageBytes)
+		}
+		line = append(line, part...)
+		if err != bufio.ErrBufferFull {
+			return line, err
+		}
+	}
+}
+
 // Render writes a human-readable report to w: one line per tool, flagged tools
 // marked and annotated with the keywords they matched, and a closing summary
 // that reminds the reader scan enforces nothing. server is the wrapped command,
 // shown for context. Output goes to stdout in the CLI, as it is the command's
 // product (like `verify`'s result line), not protocol traffic.
-func Render(w io.Writer, r Report, server string) {
-	fmt.Fprintf(w, "Scanned %d tool(s) via %q.\n\n", len(r.Findings), server)
+func Render(w io.Writer, r Report, server string) error {
+	if _, err := fmt.Fprintf(w, "Scanned %d tool(s) via %q.\n\n", len(r.Findings), server); err != nil {
+		return fmt.Errorf("writing scan report: %w", err)
+	}
 	if len(r.Findings) == 0 {
-		fmt.Fprintln(w, "The server exposed no tools.")
-		return
+		_, err := fmt.Fprintln(w, "The server exposed no tools.")
+		return err
 	}
 
 	width := 0
 	for _, f := range r.Findings {
-		if n := len(f.Tool.Name); n > width {
+		if n := len(strconv.QuoteToGraphic(f.Tool.Name)); n > width {
 			width = n
 		}
 	}
 
 	for _, f := range r.Findings {
+		// Tool metadata comes from the server. Quote controls and invisible
+		// format characters so a name cannot erase or forge rows in the report.
+		name := strconv.QuoteToGraphic(f.Tool.Name)
 		// Flagged rows pad the name to a common width so their "matched:" columns
 		// line up; unflagged rows have nothing after the name, so they are left
 		// unpadded to avoid trailing whitespace.
+		var err error
 		if f.Flagged() {
-			fmt.Fprintf(w, "  FLAG  %-*s  matched: %s\n", width, f.Tool.Name, strings.Join(f.Keywords, ", "))
+			_, err = fmt.Fprintf(w, "  FLAG  %-*s  matched: %s\n", width, name, strings.Join(f.Keywords, ", "))
 		} else {
-			fmt.Fprintf(w, "    ok  %s\n", f.Tool.Name)
+			_, err = fmt.Fprintf(w, "    ok  %s\n", name)
+		}
+		if err != nil {
+			return fmt.Errorf("writing scan report: %w", err)
 		}
 	}
 
-	fmt.Fprintf(w, "\n%d of %d tool(s) flagged for review.\n", r.Flagged(), len(r.Findings))
 	// The count invites the reader to treat the rest as cleared, which it is not.
 	// Naming what the keyword list covers also names what it leaves out, and the
 	// gap that matters most is reading: a tool that only pulls data out of a
 	// system matches nothing here, and can still be the one that costs you.
-	fmt.Fprintln(w, `An "ok" means no keyword matched, not that a tool is safe. The list covers`)
-	fmt.Fprintln(w, `destruction, execution, state change, money, network egress and secrets, so a`)
-	fmt.Fprintln(w, `tool that only reads your data matches none of it.`)
-	fmt.Fprintln(w, `scan reports only; nothing is blocked. Add the tools you want blocked to the "deny" list in your config, then run "ganimedes run --config ...".`)
+	_, err := fmt.Fprintf(w, "\n%d of %d tool(s) flagged for review.\n"+
+		"An \"ok\" means no keyword matched, not that a tool is safe. The list covers\n"+
+		"destruction, execution, state change, money, network egress and secrets, so a\n"+
+		"tool that only reads your data matches none of it.\n"+
+		"scan reports only; nothing is blocked. Add the tools you want blocked to the \"deny\" list in your config, then run \"ganimedes run --config ...\".\n",
+		r.Flagged(), len(r.Findings))
+	return err
 }
