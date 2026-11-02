@@ -1,0 +1,10 @@
+{
+  "internal/approval": 96.7,
+  "internal/audit": 86.3,
+  "internal/cli": 95.7,
+  "internal/config": 100.0,
+  "internal/jsoncheck": 96.0,
+  "internal/policy": 100.0,
+  "internal/proxy": 92.4,
+  "internal/scan": 96.3
+}

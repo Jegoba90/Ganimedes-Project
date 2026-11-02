@@ -5,5 +5,7 @@
 // works once the repo is public.
 module github.com/Jegoba90/Ganimedes-Project
 
-// The minimum Go version this module requires. A newer toolchain is fine.
-go 1.22
+// Require the patched standard library as well as the language version. The
+// gateway depends on net/http, html/template and crypto/x509; an old toolchain
+// remains a security dependency even when there are no third-party modules.
+go 1.26.10
