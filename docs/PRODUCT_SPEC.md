@@ -8,6 +8,11 @@
 > formats, guarantees, and boundaries. Binding rule as everywhere else: it
 > describes actual, tested behavior, never an aspiration (Constitution Art. 2.4,
 > 6.2, 6.3).
+>
+> **"v0" is the name of a scope, not a version.** It names the first product
+> defined here: one gateway, the audit log, the deny-list and human approval.
+> Release 1.0.0 ships that scope unchanged and declares it stable; the README's
+> Stability section says what that promise covers.
 
 ## 1. Overview
 

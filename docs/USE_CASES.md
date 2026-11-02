@@ -8,6 +8,9 @@
 >
 > Note: v0 is **default-allow**. The deny-list blocks only the tools you list;
 > everything else passes through.
+>
+> "v0" here names the first product scope, which release 1.0.0 ships unchanged.
+> It is not a version number.
 
 ## v0 (buildable now)
 

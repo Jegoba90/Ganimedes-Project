@@ -339,7 +339,7 @@ full quality gate at its own commit. No tag was pushed as part of this review.
 - **Deliberately not copied from MakerChecker:** no code analysis, no
   `--fix`-style auto-generated config, no risk score — just a flagged list.
   Keeping it a reporting-only command, with a fixed keyword list, keeps it
-  inside "Deterministic, no ML" (README's "Explicitly NOT in v0" boundary)
+  inside "Deterministic, no ML" (README's "Explicitly NOT in scope" boundary)
   and avoids turning a small helper into a second product.
 - **Framing relative to the README's "three things, and nothing more":**
   `scan` is not a fourth pillar. It has the same status as `verify` — a

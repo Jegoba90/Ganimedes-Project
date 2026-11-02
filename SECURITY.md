@@ -38,9 +38,12 @@ means instead of implying a service level it does not have:
 
 ## Supported versions
 
-One version is supported: the **latest release**. v0 is pre-1.0, moves in one
-direction, and has no long-term-support branch and no backports. A fix ships in
-the next release, and upgrading is a matter of replacing one static binary.
+One version is supported: the **latest release**. There is no long-term-support
+branch and there are no backports. A fix ships in the next release, and
+upgrading is a matter of replacing one static binary. Within 1.x an upgrade does
+not break the CLI, exit codes, config files or the verification of existing
+logs; the README's Stability section lists what that covers and what it does
+not. Upgrading is therefore the fix, not a migration.
 
 | Version | Supported |
 |---------|-----------|
@@ -81,8 +84,8 @@ reporting them is welcome only if you have found that the documented reasoning i
 wrong:
 
 - **The approval page has no authentication.** It binds to loopback, and anyone
-  with local access to that port can approve or reject. That is the v0 design,
-  stated in the README. What it does have, since `v0.3.2`, is a CSRF token: a
+  with local access to that port can approve or reject. That is the current
+  design, stated in the README. What it does have, since `v0.3.2`, is a CSRF token: a
   decision POST must carry the random value embedded in the page Ganimedes
   rendered. The Host must match the advertised numeric loopback authority,
   closing the DNS-rebinding route to reading that token, and CSP/X-Frame-Options
@@ -92,7 +95,7 @@ wrong:
 - **JSON-RPC batching is refused, not supported.** A request line holding an
   array rather than a single object is blocked whole, with one error returned
   per id in it. The policy engine and the audit log both work one call at a
-  time, so a batch is something v0 cannot judge, and ambiguity fails closed
+  time, so a batch is something the gateway cannot judge, and ambiguity fails closed
   (Art. 2.1). Batching was removed from the MCP spec in `2025-06-18`; a client
   still sending one gets a clear error rather than silent passage, which is
   what `v0.3.3` changed.
@@ -199,6 +202,6 @@ go install github.com/Jegoba90/Ganimedes-Project/cmd/ganimedes@latest
 - [`TECHNICAL_CONSTITUTION.md`](TECHNICAL_CONSTITUTION.md) §2, the rules the code
   is held to, including the one that forbids claiming more than is enforced.
 - [`docs/GO_NO_GO.md`](docs/GO_NO_GO.md) §5 and §6, the security posture checked
-  before v0 shipped and the limitations accepted with it.
+  before the first release shipped and the limitations accepted with it.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §4, how the audit chain works
   and what it does and does not detect.

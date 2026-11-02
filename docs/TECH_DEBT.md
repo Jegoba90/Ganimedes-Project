@@ -48,7 +48,7 @@
      proxy/cache — infrastructure **below** the MCP tool-call layer Ganimedes
      sits at. Ganimedes would not have prevented this specific escape; it is not
      a process/OS sandbox. Worth stating explicitly as a documented boundary
-     (mirrors the README's "Explicitly NOT in v0" honesty and Constitution Art.
+     (mirrors the README's "Explicitly NOT in scope" honesty and Constitution Art.
      2.4), so nobody assumes v0 would have stopped *this* incident.
   2. The actual attack was a **multi-step chain** (stolen credentials + chained
      zero-days → RCE → privilege escalation → lateral movement), not one
@@ -65,7 +65,7 @@
   1. A **deterministic rate/volume threshold** in the M3 policy engine — e.g.
      "more than N calls to the same tool (or a network/exfil-shaped category)
      within a time window trips REQUIRE_APPROVAL or DENY." Still simple counting,
-     no ML, so it stays inside the README's "Explicitly NOT in v0: ML-based risk
+     no ML, so it stays inside the README's "Explicitly NOT in scope: ML-based risk
      scoring" boundary.
   2. Add this incident as a **dated, sourced case study** in
      `docs/USE_CASES.md`.

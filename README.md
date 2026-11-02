@@ -21,7 +21,7 @@ about every action an agent takes:
 - What **SHOULD** it do right now? (policy and risk)
 - Can we **PROVE** what it did? (verifiable audit)
 
-In v0 that is one small gateway wrapping a single MCP server: allowed calls are
+Today that is one small gateway wrapping a single MCP server: allowed calls are
 forwarded, denied ones are blocked with an error, flagged ones pause for human
 approval on a local page. Completed calls and blocked attempts are written to a
 tamper-evident log; unanswered calls and failed appends are not complete records.
@@ -153,15 +153,18 @@ values. If the agent reads a file holding a token, that token is now in the
 log, which makes the log as sensitive as the traffic that produced it. Ganimedes
 creates it `0600`, which POSIX honours and Windows does not, so on Windows what
 protects the file is the directory you keep it in. Redaction is a later feature
-and not one v0 has. [SECURITY.md](SECURITY.md) holds the rest of the limits that
+and not one Ganimedes has yet. [SECURITY.md](SECURITY.md) holds the rest of the limits that
 are known rather than waiting to be found.
 
 ## Status
 
-Early, and shipping. Every release is published from a tagged commit, with
-checksums and a build provenance attestation on every binary, and the [latest
+Stable, and small on purpose. From 1.0.0 the CLI, its exit codes, the config
+format and the ability to verify existing logs break only in a new major
+version; [Stability](#stability-1x) lists exactly what that covers. Every
+release is published from a tagged commit, with checksums and a build provenance
+attestation on every binary, and the [latest
 one](https://github.com/Jegoba90/Ganimedes-Project/releases/latest) is always the
-one to take. v0 does **one thing well** instead of ten things badly, and
+one to take. Ganimedes does **one thing well** instead of ten things badly, and
 everything it does is listed below alongside what it deliberately does not do.
 
 Each release so far has been shaped by checking the thing that shipped rather
@@ -192,6 +195,15 @@ The list asks for an altered log that `verify` still accepts; this log was
 signed honestly and was wrong when it was written, which no amount of verifying
 would catch. Each of the three is closed, and the reasoning is in the release
 notes. Logs written by earlier versions still verify.
+
+`1.0.0` came from reading the whole codebase against its own constitution
+rather than against its tests. A `tools/call` with no id still reached the
+server undecided, `verify` accepted a log with an added field or a large number
+edited to one that rounds the same, the approval page could be read through DNS
+rebinding, and two gateways on one log could fork its chain. The lock written
+to stop that last one was itself found to outlive a client killing the gateway,
+and was replaced before release. The version number marks the promise that
+starts with it, described under [Stability](#stability-1x).
 
 ## Quick start
 
@@ -483,7 +495,7 @@ as a successful scan. Server-supplied tool names are quoted in the report.
 Building from source requires **Go 1.26.10 or newer** to include the standard
 library security fixes. No third-party runtime module is required.
 
-## v0 scope
+## Scope
 
 A lightweight **MCP gateway** you drop between an AI agent and its MCP tools.
 It does three things, and nothing more:
@@ -499,18 +511,43 @@ It does three things, and nothing more:
 If you are a developer building an agent, this is useful on day one, even if all
 you ever use is the audit log.
 
-## Explicitly NOT in v0
+## Explicitly NOT in scope
 
 Multi-level identity, ML-based risk scoring, dashboards, blockchain anchoring,
 pricing tiers, hosted SaaS. All of that comes later, and only if real users ask
 for it. Building those now would be building what nobody requested.
 
+## Stability (1.x)
+
+Within 1.x, these change only in a backward-compatible way. Anything that would
+break them waits for 2.0:
+
+- **Commands and flags.** `run`, `scan`, `verify`, `version` and `help`, with the
+  flags `ganimedes help` lists, keep their meaning. New flags may appear.
+- **Exit codes.** `0` success, `1` failure (including a log that fails
+  `verify`), `2` a usage error. A pipeline can gate on them.
+- **The config file.** A config that loads in one 1.x release loads in every
+  later one with the same meaning. A new optional field may be added in a minor
+  release; an older binary will refuse a config that uses it.
+- **Verifying logs.** Every 1.x `verify` accepts a genuine log written by the
+  same or any earlier version, back to `v0.1.0`, and `run` keeps appending to it.
+  The reverse is not promised: a minor release may add a signed field, and a
+  log that carries it needs a verifier at least that new. The release notes
+  will say so whenever that happens.
+- **The wire.** Messages the gateway allows are forwarded byte for byte (Art.
+  1.3).
+
+Not covered, and free to change in any release: the wording of messages on
+stderr and of the errors returned to the client, the layout of `scan`'s report
+and its keyword list, and the HTML of the approval page. Parse the exit code,
+not the text.
+
 ## The bigger picture
 
-The v0 gateway is the seed of a larger control plane. The roadmap follows the
+Today's gateway is the seed of a larger control plane. The roadmap follows the
 same four pillars, each earned by real adoption before it is built:
 
-| Pillar     | Question                        | v0            | Later                          |
+| Pillar     | Question                        | Today         | Later                          |
 |------------|---------------------------------|---------------|--------------------------------|
 | Identity   | Who is the agent?               | -             | Agent identity and ownership   |
 | Capability | What can it do?                 | Deny-list     | Fine-grained capabilities      |
@@ -521,7 +558,7 @@ same four pillars, each earned by real adoption before it is built:
 
 | Layer          | Choice                                              | Status  |
 |----------------|------------------------------------------------------|---------|
-| Language       | Go 1.22+                                              | in use  |
+| Language       | Go 1.26.10+                                           | in use  |
 | Dependencies   | none (standard library only)                          | in use  |
 | MCP transport  | stdio, JSON-RPC 2.0, newline-delimited JSON           | in use  |
 | CLI            | hand-rolled subcommands, no framework                 | in use  |

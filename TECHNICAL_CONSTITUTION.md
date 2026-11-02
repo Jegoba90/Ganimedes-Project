@@ -1,6 +1,6 @@
 # 🏛️ Ganimedes Technical Constitution (CTG-2026)
 
-**Version:** 1.1.0 | **Stack:** Go (stdlib only) | **Focus:** Transparency, Fail-Closed Security & Verifiable Audit
+**Version:** 1.1.1 | **Stack:** Go (stdlib only) | **Focus:** Transparency, Fail-Closed Security & Verifiable Audit
 
 This document defines the immutable laws of the code. Every pull request must
 comply with these articles.
@@ -32,8 +32,10 @@ operational procedure live in sibling documents of mandatory consultation.
 
 ### 1.1. Zero-Dependency Policy
 
-- **Rule:** Ganimedes v0 uses the Go standard library only. Adding a third-party
-  module is prohibited without a documented architectural justification.
+- **Rule:** Ganimedes uses the Go standard library only. Adding a third-party
+  module is prohibited without a documented architectural justification. The
+  rule was first written as "Ganimedes v0"; that never meant it would lapse at
+  1.0, and the wording now says so (clarification, 1.1.1).
 - **Why it is a law, not a preference:** this is a security tool. Every
   dependency is code from someone else running inside the gateway that guards the
   user's agent. Fewer dependencies means a smaller attack surface, and that small
