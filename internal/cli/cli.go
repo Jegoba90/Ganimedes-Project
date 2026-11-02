@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Jegoba90/Ganimedes-Project/internal/approval"
@@ -362,9 +363,15 @@ func scanCommand(args []string) int {
 // public key comes from --pubkey, else the default .pub next to the signing key,
 // else it is derived from the signing key itself; an offline verifier passes
 // --pubkey and needs only the public key and the log. Exit codes: 0 = intact,
-// 1 = broken or unreadable, so scripts and CI can gate on it.
+// 1 = broken or unreadable, 2 = usage error, so scripts and CI can gate on it.
+//
+// Exactly one log path is accepted. Every token used to become the path in
+// turn, so `verify a.jsonl b.jsonl` checked only b.jsonl and printed OK, and a
+// mistyped flag was looked up as a file. A verifier must never report on less
+// than it was asked about, so both are usage errors now.
 func verifyCommand(args []string) int {
 	path := defaultLogPath
+	pathGiven := false
 	pubkeyPath := ""
 
 	for len(args) > 0 {
@@ -376,8 +383,15 @@ func verifyCommand(args []string) int {
 			pubkeyPath, args = args[1], args[2:]
 			continue
 		}
-		// First non-flag token is the log path.
-		path, args = args[0], args[1:]
+		if strings.HasPrefix(args[0], "-") {
+			fmt.Fprintf(os.Stderr, "verify: unknown flag %q (a log path starting with '-' can be written ./%s)\n", args[0], args[0])
+			return 2
+		}
+		if pathGiven {
+			fmt.Fprintf(os.Stderr, "verify: more than one log path (%q and %q); verify one log per run\n", path, args[0])
+			return 2
+		}
+		path, pathGiven, args = args[0], true, args[1:]
 	}
 
 	pub, err := resolvePublicKey(pubkeyPath)

@@ -617,6 +617,26 @@ func TestVerifyCommand(t *testing.T) {
 			t.Errorf("verify --pubkey without a path = %d, want 2", got)
 		}
 	})
+
+	// Two paths used to verify only the last and report OK, so a tampered first
+	// log hid behind an intact second one. The tampered log goes first here.
+	t.Run("two log paths", func(t *testing.T) {
+		goodLog, goodPub := makeLog(t)
+		badLog, _ := makeLog(t)
+		if err := os.WriteFile(badLog, []byte("not a log\n"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got := Run([]string{"verify", "--pubkey", goodPub, badLog, goodLog}); got != 2 {
+			t.Errorf("verify with two paths = %d, want 2", got)
+		}
+	})
+
+	t.Run("unknown flag", func(t *testing.T) {
+		logPath, pubPath := makeLog(t)
+		if got := Run([]string{"verify", "--pubkey", pubPath, "--pub-key", logPath}); got != 2 {
+			t.Errorf("verify with an unknown flag = %d, want 2", got)
+		}
+	})
 }
 
 // TestResolveSigningKeyPath covers the precedence: explicit flag, then the env
