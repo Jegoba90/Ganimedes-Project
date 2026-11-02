@@ -199,6 +199,37 @@ func TestRunCommand_NonexistentServer(t *testing.T) {
 	}
 }
 
+func TestRunCommand_UnreadableSigningKey(t *testing.T) {
+	quiet(t)
+	if got := Run([]string{"run", "--signing-key", t.TempDir(), "--", "unused-server"}); got != 1 {
+		t.Fatalf("run with a directory as signing key = %d, want 1", got)
+	}
+}
+
+// Startup must explain an unusable audit destination on stderr before starting
+// the wrapped command. Otherwise a client only sees a server that disappeared
+// and has neither protocol traffic nor a useful reason to diagnose it.
+func TestRunCommand_UnavailableAuditDirectory(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "missing-directory", "audit.jsonl")
+	var code int
+	stdout, stderr := capture(t, func() {
+		code = Run([]string{
+			"run", "--log", logPath, "--signing-key", filepath.Join(dir, "signing.key"),
+			"--", "unused-server",
+		})
+	})
+	if code != 1 {
+		t.Fatalf("run with missing audit directory = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Fatalf("failed startup wrote protocol output: %q", stdout)
+	}
+	if !strings.Contains(stderr, "audit log directory") {
+		t.Fatalf("stderr does not explain the audit destination failure: %q", stderr)
+	}
+}
+
 // TestRunCommand_ConfigProvidesCommand: the wrapped command may come from the
 // config file rather than the command line. A config pointing at a nonexistent
 // binary still gets past loading and fails at proxy start (1), proving the
@@ -335,7 +366,7 @@ func TestRunCommand_ApprovalAddrInUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }() // release the occupied test port on every assertion path
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "ganimedes.json")
@@ -412,6 +443,24 @@ func TestScanCommand_HappyPath(t *testing.T) {
 	args := []string{"scan", "--", os.Args[0], "-test.run=TestHelperScanServer"}
 	if got := Run(args); got != 0 {
 		t.Errorf("scan happy path = %d, want 0", got)
+	}
+}
+
+func TestScanCommand_OutputFailure(t *testing.T) {
+	quiet(t)
+	t.Setenv("GO_WANT_SCAN_SERVER", "1")
+	closed, err := os.Create(filepath.Join(t.TempDir(), "closed-output"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	previous := os.Stdout
+	os.Stdout = closed
+	t.Cleanup(func() { os.Stdout = previous })
+	if got := Run([]string{"scan", "--", os.Args[0], "-test.run=TestHelperScanServer"}); got != 1 {
+		t.Fatalf("scan with closed output = %d, want 1", got)
 	}
 }
 
@@ -591,6 +640,7 @@ func TestResolveSigningKeyPath(t *testing.T) {
 // the signing key, then a clear error when none of those exist. The default and
 // derive cases read the current directory, so the test runs inside a temp dir.
 func TestResolvePublicKey(t *testing.T) {
+	t.Setenv(signingKeyEnv, "")
 	// Explicit path wins.
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "k.key")
@@ -639,5 +689,33 @@ func TestResolvePublicKey(t *testing.T) {
 	}
 	if _, err := resolvePublicKey(""); err == nil {
 		t.Error("resolvePublicKey with no key found returned nil error")
+	}
+}
+
+// run and verify must select the same key when an operator configures the
+// signing key via the environment instead of repeating flags for each command.
+func TestResolvePublicKey_Environment(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "configured.key")
+	priv, _, err := audit.LoadOrCreateSigningKey(keyPath)
+	if err != nil {
+		t.Fatalf("LoadOrCreateSigningKey: %v", err)
+	}
+	t.Setenv(signingKeyEnv, keyPath)
+	pub, err := resolvePublicKey("")
+	if err != nil || !pub.Equal(priv.Public()) {
+		t.Fatalf("configured .pub: pub=%v err=%v", pub, err)
+	}
+	if err := os.Remove(audit.PublicKeyPath(keyPath)); err != nil {
+		t.Fatalf("Remove .pub: %v", err)
+	}
+	pub, err = resolvePublicKey("")
+	if err != nil || !pub.Equal(priv.Public()) {
+		t.Fatalf("configured private fallback: pub=%v err=%v", pub, err)
+	}
+	// A malformed configured path must fail where it was selected rather than
+	// silently picking a different key from the current directory.
+	t.Setenv(signingKeyEnv, filepath.Join(t.TempDir(), strings.Repeat("a", 300)+".key"))
+	if _, err := resolvePublicKey(""); err == nil || !strings.Contains(err.Error(), "checking public key") {
+		t.Fatalf("invalid configured key path: %v", err)
 	}
 }
