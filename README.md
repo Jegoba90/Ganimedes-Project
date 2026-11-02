@@ -56,7 +56,7 @@ single edit someone would make to cover a track — and ask the same question ag
 
 ```console
 $ ganimedes verify
-audit log TAMPERED: entry 2: content was modified (hash mismatch: stored d99dd9ff85cc…, recomputed 339cbcb74eeb…)
+audit log TAMPERED: entry 2: content was modified (hash mismatch: stored 13f1ca9f8be6…, recomputed bbfd6ef358d3…) (ganimedes-audit.jsonl)
 verification stopped at the first break; entries after it were not checked
 ```
 
@@ -91,42 +91,47 @@ was called inside.
 One line per completed tool call or blocked attempt, and one line at the
 start of every run stating what the gateway was and which rules it was holding.
 That second job is the whole product by default: configure nothing and Ganimedes
-blocks no valid call by tool name and records completed calls, which makes it less a doorman than a
-notary. It does not tell you who may enter. It tells you who did.
+blocks no valid call by tool name and records completed calls, which makes it
+less a doorman than a notary. It does not tell you who may enter. It tells you
+who did.
 
 This is a real log, wrapped here to fit the page (in the file each entry is a
 single line). The header opens the run:
 
 ```json
-{"seq":1,"ts":"2026-08-03T19:56:02.4925943Z","session":"f931ed3a2197b133",
+{"seq":1,"ts":"2026-11-02T23:13:58.7048549Z","session":"2823f1fdfa36f55a",
  "kind":"session",
- "session_info":{"version":"v0.3.1","command":"npx",
-   "args":["-y","@modelcontextprotocol/server-filesystem","./data"],
+ "session_info":{"version":"v1.0.0","command":"npx",
+   "args":["-y","@modelcontextprotocol/server-filesystem@2026.8.31","./data"],
    "deny":["move_file"],"approve":[]},
  "prev_hash":"",
- "hash":"3bea4dc07bc77980a87ae04a259b487b1b6c34ca50845b57cd75d51ad30ee2f7",
- "sig":"nUABEq7SvdT4DHC+JnqVdKailAGTXz9zj0wFbmJU0ZBFEWNb6edEnZJTAM3qc9w1EpdLER13HBiVFPDlfdH/DQ=="}
+ "hash":"3d28425e7bb2ff661cf9651b6b43563c40607a42490455a514052c07506377a3",
+ "sig":"2MwpHlKEN+Ba08rKmD5wvwPnBzg0lONLg68+DzbgXDODez+J7liold2FxG1eOpywD561JswMwPRGTVHmHrkvDA=="}
 ```
 
 Then the agent asks that server to write a file:
 
 ```json
-{"seq":2,"ts":"2026-08-03T19:56:04.3236649Z","session":"f931ed3a2197b133",
- "tool":"write_file","args":{"content":"hello","path":"notes.md"},
+{"seq":2,"ts":"2026-11-02T23:14:01.5494576Z","session":"2823f1fdfa36f55a",
+ "tool":"write_file","args":{"path":"notes.md","content":"hello"},
  "result":{"content":[{"type":"text","text":"Successfully wrote to notes.md"}],
    "structuredContent":{"content":"Successfully wrote to notes.md"}},
+ "content_hash":"9b3315a2949dcf786ddb8b97e4a4a75eadf02879707257bb1f7e900a6cb938dc",
  "decision":"allow",
- "prev_hash":"3bea4dc07bc77980a87ae04a259b487b1b6c34ca50845b57cd75d51ad30ee2f7",
- "hash":"bf39c74910ec01935ad642e1e09dd2db35d4f504295c34611175248cb0974f6b",
- "sig":"JPLt8uytK4I5iz4nqrB3ypQZPpvvpOd9Q33x4QP5GAvFlLHczxu19DyJjPa9IT5B2rnGk4tI7gLYOWkU5cgjBQ=="}
+ "prev_hash":"3d28425e7bb2ff661cf9651b6b43563c40607a42490455a514052c07506377a3",
+ "hash":"13f1ca9f8be6b82cc7b3a4a952c91efb7af5c2432439ee936a92c83ca4c7d88a",
+ "sig":"r9eP+B+RpfjzyCNtiQr5gtCtChthETP/M2oPome5hJPHFbzOw6xt5Ngeu+iZTLyDQNVfo7f5L55YfUNbBFiJDQ=="}
 ```
 
-`tool`, `args` and `result` hold the observed JSON values. The log encoder may
-compact whitespace or escape HTML; forwarded wire bytes stay unchanged.
-`decision` is what Ganimedes did about it: `allow`, `deny`,
-`approved`, `rejected`, or `timeout` when nobody answered in time. `prev_hash`
-and `hash` chain each entry to the one before it, and `sig` signs it, which is
-what makes an edit to past history detectable instead of merely discouraged.
+`tool`, `args` and `result` hold the observed JSON values, in the order the
+client sent them. The log encoder may compact whitespace or escape HTML;
+forwarded wire bytes stay unchanged. `decision` is what Ganimedes did about it:
+`allow`, `deny`, `approved`, `rejected`, or `timeout` when nobody answered in
+time. `content_hash` commits to `args`, `result` and `error` exactly as
+encoded, numbers included, so even an edit that canonical JSON would round away
+breaks the seal. `prev_hash` and `hash` chain each entry to the one before it,
+and `sig` signs it, which is what makes an edit to past history detectable
+instead of merely discouraged.
 
 The header sits in that same chain, and that is the point of it. Without it a
 `decision` of `allow` is identical bytes whether a policy examined the call and
@@ -153,8 +158,8 @@ values. If the agent reads a file holding a token, that token is now in the
 log, which makes the log as sensitive as the traffic that produced it. Ganimedes
 creates it `0600`, which POSIX honours and Windows does not, so on Windows what
 protects the file is the directory you keep it in. Redaction is a later feature
-and not one Ganimedes has yet. [SECURITY.md](SECURITY.md) holds the rest of the limits that
-are known rather than waiting to be found.
+and not one Ganimedes has yet. [SECURITY.md](SECURITY.md) holds the rest of the
+limits that are known rather than waiting to be found.
 
 ## Status
 
@@ -421,12 +426,17 @@ and flags the risky ones. It reports only, and enforces nothing:
 
 ```sh
 ganimedes scan -- npx -y @modelcontextprotocol/server-filesystem ./data
-#   FLAG  write_file        matched: write, create
-#   FLAG  edit_file         matched: edit
-#   FLAG  create_directory  matched: create
-#   FLAG  move_file         matched: rename
+#   FLAG  "write_file"                 matched: write, create
+#   FLAG  "edit_file"                  matched: edit
+#   FLAG  "create_directory"           matched: create
+#   FLAG  "move_file"                  matched: rename
 #   4 of 14 tool(s) flagged for review.
 ```
+
+`scan` gives a server 15 seconds to answer. The first `npx -y` run of a package
+spends part of that downloading it, and if the download is slow `scan` reports
+that the server did not answer before its deadline. Run it again once the
+package is cached.
 
 Then write the rules. `deny` blocks outright, `approve` holds the call until a
 human decides:
@@ -460,13 +470,20 @@ that would not come up. Give that one its own with `--approval-addr
 
 `ganimedes help` lists every command and flag.
 
+### Operating notes
+
 Each audit log permits one writer. A second gateway needs its own `--log` path
 as well as its own approval port; started on a log already in use, it exits
 with an error naming the log. The lock is held by the operating system and goes
 away with the process, even when the client kills it, so there is nothing to
-clean up before restarting. Startup verifies the existing chain with the signing key and refuses
-corrupt history or a missing final newline. Preserve the original file and
-recover it offline; Ganimedes never silently repairs signed history.
+clean up before restarting. Startup verifies the existing chain with the
+signing key and refuses corrupt history or a missing final newline. Preserve
+the original file and recover it offline; Ganimedes never silently repairs
+signed history.
+
+Verify a log with a binary at least as new as the one that wrote it. A
+`ganimedes verify` from v0.3.3 or earlier does not know `content_hash` and
+reports a genuine newer log as tampered; the other direction always works.
 
 New call records include a signed `content_hash` that also binds the exact
 numeric representation of arguments, results and errors after JSON encoding.
