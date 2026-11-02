@@ -191,6 +191,12 @@ func scanWithContext(ctx context.Context, cfg config.Config) (Report, error) {
 	defer stopClosing()
 
 	tools, derr := discover(serverIn, serverOut)
+	// Read before cancel() below, which would make every later check say
+	// Canceled. On expiry the pipes were closed under discover, so derr is a
+	// bare "file already closed" that names neither the deadline nor its usual
+	// cause: a first `npx -y` run still downloading the server. That was hit in
+	// the first real-server run after the pipes started closing on expiry.
+	expired := errors.Is(ctx.Err(), context.DeadlineExceeded)
 
 	// The tools list is all scan needs. Signal EOF to the server, then force it
 	// down (cancel) and reap it: its exit status is not the scan's concern, and
@@ -202,6 +208,9 @@ func scanWithContext(ctx context.Context, cfg config.Config) (Report, error) {
 	_ = cmd.Wait()
 
 	if derr != nil {
+		if expired {
+			return Report{}, fmt.Errorf("the server did not answer before scan's deadline; a launcher such as npx -y may still be downloading it on a first run, so retry once that finishes (%w)", derr)
+		}
 		return Report{}, derr
 	}
 

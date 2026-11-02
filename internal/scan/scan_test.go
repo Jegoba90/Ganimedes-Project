@@ -412,6 +412,34 @@ func TestScan_TimeoutClosesInheritedOutput(t *testing.T) {
 	if err == nil || time.Since(start) > 2500*time.Millisecond {
 		t.Fatalf("error=%v elapsed=%v; inherited stdout outlived scan deadline", err, time.Since(start))
 	}
+	// Closing the pipes turns expiry into a read error; the user must still be
+	// told it was the deadline, not shown "file already closed".
+	if !strings.Contains(err.Error(), "did not answer before scan's deadline") {
+		t.Errorf("expiry not reported as a deadline: %v", err)
+	}
+}
+
+// The deadline wording is for expiry only. A server that exits at once has
+// failed for a reason of its own, and blaming the deadline (or a download)
+// would send the user to the wrong fix.
+func TestScan_ExitWithoutAnswerIsNotADeadline(t *testing.T) {
+	t.Setenv("GO_WANT_SCAN_EXIT", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := scanWithContext(ctx, config.Config{Command: os.Args[0], Args: []string{"-test.run=^TestHelperScanExit$"}})
+	if err == nil {
+		t.Fatal("a server that exits without answering was scanned successfully")
+	}
+	if strings.Contains(err.Error(), "deadline") {
+		t.Errorf("an immediate exit was reported as a deadline: %v", err)
+	}
+}
+
+func TestHelperScanExit(t *testing.T) {
+	if os.Getenv("GO_WANT_SCAN_EXIT") != "1" {
+		return
+	}
+	os.Exit(3)
 }
 
 func TestHelperScanInherited(t *testing.T) {
