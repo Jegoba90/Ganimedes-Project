@@ -396,7 +396,7 @@ func TestStartServeClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET %s: %v", s.URL(), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // response cleanup cannot change test observations
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -416,7 +416,7 @@ func TestStart_AddressInUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }() // release the test listener even when an assertion fails
 
 	s, err := New(ln.Addr().String(), time.Second)
 	if err != nil {
@@ -436,5 +436,172 @@ func TestClose_BeforeStart(t *testing.T) {
 	}
 	if err := s.Close(context.Background()); err != nil {
 		t.Errorf("Close before Start = %v, want nil", err)
+	}
+}
+
+// A hostile DNS name can resolve to loopback without changing its browser
+// origin. If the listener serves that Host, its script can read the CSRF token
+// and decide without a human. Exercise the real Start wiring with a forged
+// authority, then prove the URL Ganimedes printed still supports a real click.
+func TestStart_RejectsReboundHost(t *testing.T) {
+	s, err := New("localhost:0", 2*time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	endpoint, err := url.Parse(s.URL())
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	outcome := make(chan Outcome, 1)
+	go func() { outcome <- s.Request("payment.execute", json.RawMessage(`{"amount":100}`)) }()
+	id := waitForPendingID(t, s)
+	form := url.Values{"id": {id}, "action": {"approve"}, "csrf_token": {s.csrfToken}}
+	client := &http.Client{
+		Timeout: time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		target := s.URL()
+		if method == http.MethodPost {
+			target += "decision"
+		}
+		req, err := http.NewRequest(method, target, strings.NewReader(form.Encode()))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Host = "attacker.example:" + endpoint.Port()
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("hostile request: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close() // the body was consumed; cleanup cannot change the verdict
+		if err != nil {
+			t.Fatalf("read hostile response: %v", err)
+		}
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s with attacker Host = %d, want 403", method, resp.StatusCode)
+		}
+		if strings.Contains(string(body), s.csrfToken) || strings.Contains(string(body), "payment.execute") {
+			t.Fatal("unexpected Host received sensitive approval content")
+		}
+	}
+	select {
+	case got := <-outcome:
+		t.Fatalf("hostile Host resolved pending approval as %v", got)
+	default:
+	}
+	resp, err := client.Get(s.URL())
+	if err != nil {
+		t.Fatalf("GET real URL: %v", err)
+	}
+	_ = resp.Body.Close() // only the response headers are needed by this test
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("real URL status = %d, want 200", resp.StatusCode)
+	}
+	// A token authenticates a form, not the user's intent. Framing the real
+	// page would preserve the correct token, so framing must be refused too.
+	for name, want := range map[string]string{
+		"Content-Security-Policy": "frame-ancestors 'none'",
+		"X-Frame-Options":         "DENY",
+		"Cache-Control":           "no-store",
+		"X-Content-Type-Options":  "nosniff",
+	} {
+		if got := resp.Header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	resp, err = client.PostForm(s.URL()+"decision", form)
+	if err != nil {
+		t.Fatalf("legitimate decision: %v", err)
+	}
+	_ = resp.Body.Close() // only the status is needed; cleanup cannot change the verdict
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("legitimate decision status = %d, want 303", resp.StatusCode)
+	}
+	if got := <-outcome; got != Approved {
+		t.Fatalf("legitimate decision = %v, want Approved", got)
+	}
+}
+
+func TestHandleDecision_RejectsOversizedBody(t *testing.T) {
+	s, err := New("127.0.0.1:0", 2*time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	outcome := make(chan Outcome, 1)
+	go func() { outcome <- s.Request("payment.execute", nil) }()
+	id := waitForPendingID(t, s)
+	form := url.Values{
+		"id": {id}, "action": {"approve"}, "csrf_token": {s.csrfToken},
+		"padding": {strings.Repeat("a", maxDecisionBody)},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/decision", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleDecision(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body status = %d, want 413", rec.Code)
+	}
+	select {
+	case got := <-outcome:
+		t.Fatalf("oversized body resolved the approval as %v", got)
+	default:
+	}
+	postDecision(t, s, id, "reject")
+	if got := <-outcome; got != Rejected {
+		t.Fatalf("valid decision after oversized request = %v, want Rejected", got)
+	}
+}
+
+func TestHandleDecision_MalformedForm(t *testing.T) {
+	s, err := New("127.0.0.1:0", time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/decision", strings.NewReader("id=%zz"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleDecision(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed form status = %d, want 400", rec.Code)
+	}
+}
+
+func TestClose_ReleasesPendingRequest(t *testing.T) {
+	s, err := New("127.0.0.1:0", time.Hour)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	outcome := make(chan Outcome, 1)
+	go func() { outcome <- s.Request("payment.execute", nil) }()
+	waitForPendingID(t, s)
+	if err := s.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case got := <-outcome:
+		if got != TimedOut {
+			t.Fatalf("closed request = %v, want TimedOut", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close left the approval waiting for its hour-long timeout")
+	}
+	if body := indexBody(t, s); strings.Contains(body, "payment.execute") {
+		t.Fatal("closed request remains on the approval page")
+	}
+	if err := s.Close(context.Background()); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if got := s.Request("after.close", nil); got != TimedOut {
+		t.Fatalf("request after Close = %v, want TimedOut", got)
 	}
 }
