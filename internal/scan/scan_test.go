@@ -3,13 +3,18 @@ package scan
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Jegoba90/Ganimedes-Project/internal/config"
 )
@@ -114,22 +119,172 @@ func TestDiscover_HappyPath(t *testing.T) {
 	}
 }
 
+// A dangerous tool on page two must be reported just like one on page one.
+// Requests use the cursor verbatim, including the valid empty-string cursor.
+func TestDiscover_Pagination(t *testing.T) {
+	for _, cursor := range []string{"opaque+/=", ""} {
+		t.Run(cursor, func(t *testing.T) {
+			encoded, err := json.Marshal(cursor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := fmt.Sprintf(initResultLine, "1") +
+				`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_file"}],"nextCursor":` + string(encoded) + "}}\n" +
+				`{"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"delete_file"}]}}` + "\n"
+			var requests bytes.Buffer
+			tools, err := discover(&requests, strings.NewReader(input))
+			if err != nil || len(tools) != 2 || tools[1].Name != "delete_file" {
+				t.Fatalf("tools=%+v, error=%v; want both pages", tools, err)
+			}
+			lines := strings.Split(strings.TrimSpace(requests.String()), "\n")
+			if len(lines) != 4 {
+				t.Fatalf("requests=%s", requests.String())
+			}
+			var last struct {
+				ID     int               `json:"id"`
+				Params map[string]string `json:"params"`
+			}
+			if err := json.Unmarshal([]byte(lines[3]), &last); err != nil {
+				t.Fatal(err)
+			}
+			gotCursor, present := last.Params["cursor"]
+			if last.ID != 3 || !present || gotCursor != cursor {
+				t.Fatalf("last request=%s; want fresh id and opaque cursor", lines[3])
+			}
+		})
+	}
+}
+
+func TestDiscover_PaginationFailsWithoutPartialReport(t *testing.T) {
+	for name, second := range map[string]string{
+		"cycle":        `{"result":{"tools":[],"nextCursor":"again"}}`,
+		"server error": `{"error":{"code":-32602,"message":"bad cursor"}}`,
+		"missing list": `{"result":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := fmt.Sprintf(initResultLine, "1") +
+				`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_file"}],"nextCursor":"again"}}` + "\n" +
+				`{"jsonrpc":"2.0","id":3,` + second[1:] + "\n"
+			tools, err := discover(io.Discard, strings.NewReader(input))
+			if err == nil || tools != nil {
+				t.Fatalf("tools=%+v, error=%v; want error with no partial results", tools, err)
+			}
+		})
+	}
+}
+
+func TestDiscover_PageLimit(t *testing.T) {
+	var input strings.Builder
+	fmt.Fprintf(&input, initResultLine, "1")
+	for page := 0; page < maxScanPages; page++ {
+		fmt.Fprintf(&input, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[],"nextCursor":"%d"}}`+"\n", page+2, page)
+	}
+	if tools, err := discover(io.Discard, strings.NewReader(input.String())); err == nil || tools != nil {
+		t.Fatalf("tools=%+v, error=%v; want page limit", tools, err)
+	}
+}
+
+func TestParseToolsPage(t *testing.T) {
+	for _, input := range []string{
+		`null`, `[]`, `{`, `{}`, `{"tools":null}`, `{"Tools":[]}`,
+		`{"tools":[null]}`, `{"tools":[{}]}`, `{"tools":[1]}`,
+		`{"tools":[{"Name":"delete_file"}]}`, `{"tools":[{"name":3}]}`,
+		`{"tools":[{"name":"x","description":null}]}`,
+		`{"tools":[{"name":"x","description":3}]}`,
+		`{"tools":[],"nextCursor":null}`, `{"tools":[],"nextCursor":3}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			if _, _, err := parseToolsPage(json.RawMessage(input)); err == nil {
+				t.Fatal("accepted malformed tools/list result")
+			}
+		})
+	}
+	if tools, next, err := parseToolsPage(json.RawMessage(`{"tools":[]}`)); err != nil || len(tools) != 0 || next != nil {
+		t.Fatalf("empty tools list: tools=%+v next=%v error=%v", tools, next, err)
+	}
+}
+
+func TestReadResponse_RejectsAmbiguity(t *testing.T) {
+	for _, input := range []string{
+		`{"jsonrpc":"2.0","id":2,"result":{},"result":{"tools":[]}}`,
+		`{"jsonrpc":"2.0","id":2,"result":{"tools":[],"x":"\ud800"}}`,
+		`{"jsonrpc":"1.0","id":2,"result":{}}`,
+		`{"jsonrpc":2,"id":2,"result":{}}`,
+		`{"id":2,"result":{}}`,
+		`{"jsonrpc":"2.0","id":2}`,
+		`{"jsonrpc":"2.0","id":2,"result":{},"error":{}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","result":{}}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := readResponse(bufio.NewReader(strings.NewReader(input+"\n")), "2"); err == nil {
+				t.Fatal("accepted ambiguous response")
+			}
+		})
+	}
+	input := "server log\n{}\n" + `{"jsonrpc":"2.0","id":99,"result":{}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`
+	if _, err := readResponse(bufio.NewReader(strings.NewReader(input)), "2"); err != nil {
+		t.Fatalf("interleaved output/final line: %v", err)
+	}
+}
+
+func TestReadResponse_MessageLimit(t *testing.T) {
+	input := strings.NewReader(strings.Repeat("x", maxMessageBytes+1))
+	if _, err := readResponse(bufio.NewReader(input), "2"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error=%v; want message size limit", err)
+	}
+}
+
+type failingStream struct{}
+
+func (failingStream) Read([]byte) (int, error)  { return 0, io.ErrClosedPipe }
+func (failingStream) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+type shortWriter struct{}
+
+func (shortWriter) Write(b []byte) (int, error) { return len(b) - 1, nil }
+
+func TestScanStreamFailures(t *testing.T) {
+	if _, err := readResponse(bufio.NewReader(failingStream{}), "1"); err == nil {
+		t.Fatal("read error discarded")
+	}
+	if err := writeRequest(failingStream{}, "1", "initialize", nil); err == nil {
+		t.Fatal("write error discarded")
+	}
+	if err := writeRequest(shortWriter{}, "1", "initialize", nil); err != io.ErrShortWrite && (err == nil || !strings.Contains(err.Error(), "short write")) {
+		t.Fatalf("error=%v; want short write", err)
+	}
+	if err := writeRequest(io.Discard, "1", "initialize", make(chan int)); err == nil {
+		t.Fatal("marshal error discarded")
+	}
+	if _, err := discover(failingStream{}, strings.NewReader("")); err == nil {
+		t.Fatal("initialize write failure discarded")
+	}
+	if _, err := discover(io.Discard, strings.NewReader(`{"jsonrpc":"2.0","id":1,"error":{}}`)); err == nil {
+		t.Fatal("initialize error discarded")
+	}
+}
+
 // TestDiscover_ToolsListError: a server that answers tools/list with a JSON-RPC
 // error surfaces as an error, not an empty (falsely reassuring) tool list.
 func TestDiscover_ToolsListError(t *testing.T) {
 	reqR, reqW := io.Pipe()
 	respR, respW := io.Pipe()
 	go func() {
-		defer respW.Close()
+		defer func() { _ = respW.Close() }() // cleanup of the in-memory server pipe
 		br := bufio.NewReader(reqR)
 		for {
 			line, err := br.ReadBytes('\n')
 			if id, method, ok := parseIDMethod(line); ok {
 				switch method {
 				case "initialize":
-					fmt.Fprintf(respW, initResultLine, id)
+					if _, err := fmt.Fprintf(respW, initResultLine, id); err != nil {
+						return
+					}
 				case "tools/list":
-					fmt.Fprintf(respW, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"tools not supported"}}`+"\n", id)
+					if _, err := fmt.Fprintf(respW, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"tools not supported"}}`+"\n", id); err != nil {
+						return
+					}
 				}
 			}
 			if err != nil {
@@ -214,6 +369,82 @@ func TestScan_NonexistentServer(t *testing.T) {
 	}
 }
 
+func TestScan_TimeoutClosesPipes(t *testing.T) {
+	t.Setenv("GO_WANT_SCAN_STALL", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := scanWithContext(ctx, config.Config{Command: os.Args[0], Args: []string{"-test.run=TestHelperScanStall"}})
+	if err == nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("error=%v elapsed=%v; want bounded failure", err, time.Since(start))
+	}
+}
+
+// A descendant may retain stdout after the direct child is killed. The scan
+// deadline still has to end the read; waiting for the inherited handle to close
+// makes CommandContext's process kill insufficient on its own.
+func TestScan_TimeoutClosesInheritedOutput(t *testing.T) {
+	t.Setenv("GO_WANT_SCAN_INHERITED", "parent")
+	pidPath := filepath.Join(t.TempDir(), "descendant.pid")
+	t.Setenv("GO_SCAN_DESCENDANT_PID", pidPath)
+	t.Cleanup(func() {
+		// On Windows a live descendant also holds the test executable open,
+		// preventing go test from cleaning its temporary build directory.
+		data, err := os.ReadFile(pidPath)
+		if err != nil {
+			return // the helper did not start a descendant
+		}
+		pid, err := strconv.Atoi(string(data))
+		if err != nil {
+			t.Errorf("invalid helper pid: %v", err)
+			return
+		}
+		process, err := os.FindProcess(pid)
+		if err == nil {
+			_ = process.Kill()    // cleanup; it may already have exited
+			_, _ = process.Wait() // join on Windows; non-child wait is unavailable on Unix
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := scanWithContext(ctx, config.Config{Command: os.Args[0], Args: []string{"-test.run=TestHelperScanInherited"}})
+	if err == nil || time.Since(start) > 2500*time.Millisecond {
+		t.Fatalf("error=%v elapsed=%v; inherited stdout outlived scan deadline", err, time.Since(start))
+	}
+}
+
+func TestHelperScanInherited(t *testing.T) {
+	switch os.Getenv("GO_WANT_SCAN_INHERITED") {
+	case "child":
+		time.Sleep(4 * time.Second)
+		os.Exit(0)
+	case "parent":
+		child := exec.Command(os.Args[0], "-test.run=TestHelperScanInherited")
+		child.Env = append(os.Environ(), "GO_WANT_SCAN_INHERITED=child")
+		child.Stdout = os.Stdout
+		if err := child.Start(); err != nil {
+			os.Exit(3)
+		}
+		if err := os.WriteFile(os.Getenv("GO_SCAN_DESCENDANT_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			_ = child.Process.Kill() // do not leave an untracked test helper
+			os.Exit(4)
+		}
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+}
+
+func TestHelperScanStall(t *testing.T) {
+	if os.Getenv("GO_WANT_SCAN_STALL") != "1" {
+		return
+	}
+	// A live timer keeps the stand-in asleep rather than triggering Go's
+	// all-goroutines-asleep detector. Its parent must terminate this process.
+	time.Sleep(time.Minute)
+	os.Exit(0)
+}
+
 // TestRender covers the report formatting for a mixed report and the empty case.
 func TestRender(t *testing.T) {
 	var buf bytes.Buffer
@@ -221,7 +452,9 @@ func TestRender(t *testing.T) {
 		{Tool: Tool{Name: "read_file"}},
 		{Tool: Tool{Name: "delete_file"}, Keywords: []string{"delete"}},
 	}}
-	Render(&buf, r, "mock-server")
+	if err := Render(&buf, r, "mock-server"); err != nil {
+		t.Fatal(err)
+	}
 	out := buf.String()
 
 	for _, want := range []string{"Scanned 2 tool(s)", "mock-server", "FLAG", "delete_file", "matched: delete", "1 of 2 tool(s) flagged"} {
@@ -231,9 +464,54 @@ func TestRender(t *testing.T) {
 	}
 
 	var empty bytes.Buffer
-	Render(&empty, Report{}, "mock-server")
+	if err := Render(&empty, Report{}, "mock-server"); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(empty.String(), "no tools") {
 		t.Errorf("empty render missing the no-tools note; got:\n%s", empty.String())
+	}
+}
+
+func TestRender_EscapesUntrustedNames(t *testing.T) {
+	var out bytes.Buffer
+	err := Render(&out, Report{Findings: []Finding{
+		{Tool: Tool{Name: "\x1b[2J\n    ok  harmless\u202e"}, Keywords: []string{"delete"}},
+		{Tool: Tool{Name: "\rforged\trow"}},
+	}}, "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, control := range []string{"\x1b", "\r", "\t", "\u202e"} {
+		if strings.Contains(out.String(), control) {
+			t.Fatalf("report contains unescaped control %q", control)
+		}
+	}
+	if !strings.Contains(out.String(), `\n    ok`) {
+		t.Fatalf("embedded newline was not rendered visibly: %q", out.String())
+	}
+}
+
+type failAfterWrites struct{ remaining int }
+
+func (w *failAfterWrites) Write(b []byte) (int, error) {
+	if w.remaining == 0 {
+		return 0, io.ErrClosedPipe
+	}
+	w.remaining--
+	return len(b), nil
+}
+
+func TestRender_OutputFailure(t *testing.T) {
+	for _, report := range []Report{
+		{},
+		{Findings: []Finding{{Tool: Tool{Name: "read_file"}}}},
+		{Findings: []Finding{{Tool: Tool{Name: "delete_file"}, Keywords: []string{"delete"}}}},
+	} {
+		for remaining := 0; remaining < len(report.Findings)+2; remaining++ {
+			if err := Render(&failAfterWrites{remaining: remaining}, report, "server"); err == nil {
+				t.Fatalf("discarded output failure after %d writes", remaining)
+			}
+		}
 	}
 }
 
@@ -262,16 +540,20 @@ func parseIDMethod(line []byte) (id json.RawMessage, method string, ok bool) {
 // initialized notification. It runs until its input reaches EOF, then closes its
 // output.
 func serveTools(reqR io.Reader, respW io.WriteCloser, toolsJSON string) {
-	defer respW.Close()
+	defer func() { _ = respW.Close() }() // cleanup of the in-memory server pipe
 	br := bufio.NewReader(reqR)
 	for {
 		line, err := br.ReadBytes('\n')
 		if id, method, ok := parseIDMethod(line); ok {
 			switch method {
 			case "initialize":
-				fmt.Fprintf(respW, initResultLine, id)
+				if _, err := fmt.Fprintf(respW, initResultLine, id); err != nil {
+					return
+				}
 			case "tools/list":
-				fmt.Fprintf(respW, `{"jsonrpc":"2.0","id":%s,"result":{"tools":%s}}`+"\n", id, toolsJSON)
+				if _, err := fmt.Fprintf(respW, `{"jsonrpc":"2.0","id":%s,"result":{"tools":%s}}`+"\n", id, toolsJSON); err != nil {
+					return
+				}
 			}
 		}
 		if err != nil {
