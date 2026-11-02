@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -37,13 +38,31 @@ func PublicKeyPath(privPath string) string {
 // key is written beside it at PublicKeyPath(path) with 0644 so it can be shared
 // with anyone who needs to verify the log. Both are PEM-encoded (PKCS#8 for the
 // private key, PKIX for the public).
+//
+// An existing private key is reused only with its matching public key; a missing
+// public half is recreated from it. An orphaned, invalid, or mismatched public
+// file is never replaced. The two-file publication is not atomic: failures are
+// reported and a later call can repair a missing public half.
 func LoadOrCreateSigningKey(path string) (priv ed25519.PrivateKey, created bool, err error) {
 	priv, err = LoadSigningKey(path)
 	switch {
 	case err == nil:
+		if err := ensurePublicKey(PublicKeyPath(path), priv); err != nil {
+			return nil, false, err
+		}
 		return priv, false, nil
 	case !errors.Is(err, os.ErrNotExist):
 		return nil, false, err
+	}
+	// A public key may be the only surviving trust anchor for older logs. A
+	// missing private half must never turn into permission to replace it. Lstat
+	// also treats a dangling symlink as existing material rather than an empty
+	// destination where a new keypair may be published.
+	pubPath := PublicKeyPath(path)
+	if _, err := os.Lstat(pubPath); err == nil {
+		return nil, false, fmt.Errorf("public key %q exists without its signing key; refusing to replace it", pubPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, false, fmt.Errorf("checking public key %q: %w", pubPath, err)
 	}
 
 	// Not there yet: generate, persist, and report it as newly created.
@@ -58,6 +77,24 @@ func LoadOrCreateSigningKey(path string) (priv ed25519.PrivateKey, created bool,
 		return nil, false, err
 	}
 	return priv, true, nil
+}
+
+// Keypair publication is not atomic. A failed public-file write can leave a
+// valid private key behind; retrying must repair only the missing public half,
+// never mint a replacement private key or overwrite a different trust anchor.
+func ensurePublicKey(path string, priv ed25519.PrivateKey) error {
+	derived := ed25519.PublicKey(priv[ed25519.SeedSize:])
+	pub, err := LoadPublicKey(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return writePublicKey(path, derived)
+	}
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(pub, derived) {
+		return fmt.Errorf("public key %q does not match the signing key; refusing to replace it", path)
+	}
+	return nil
 }
 
 // LoadSigningKey loads an Ed25519 private key from a PEM PKCS#8 file. A missing
@@ -119,9 +156,11 @@ func writePrivateKey(path string, priv ed25519.PrivateKey) error {
 	if err != nil {
 		return fmt.Errorf("creating signing key %q: %w", path, err)
 	}
-	defer f.Close()
 	if _, err := f.Write(pemBytes); err != nil {
-		return fmt.Errorf("writing signing key %q: %w", path, err)
+		return errors.Join(fmt.Errorf("writing signing key %q: %w", path, err), f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing signing key %q: %w", path, err)
 	}
 	return nil
 }
@@ -133,8 +172,15 @@ func writePublicKey(path string, pub ed25519.PublicKey) error {
 		return fmt.Errorf("encoding public key: %w", err)
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: pemTypePublic, Bytes: der})
-	if err := os.WriteFile(path, pemBytes, 0o644); err != nil {
-		return fmt.Errorf("writing public key %q: %w", path, err)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Errorf("creating public key %q: %w", path, err)
+	}
+	if _, err := f.Write(pemBytes); err != nil {
+		return errors.Join(fmt.Errorf("writing public key %q: %w", path, err), f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing public key %q: %w", path, err)
 	}
 	return nil
 }
