@@ -429,6 +429,29 @@ and re-checked locally the same day, but a message is only true of the binary
 people can download, and until this run nothing had established that the sentence
 in the README was the sentence in the release.
 
+#### Run of 2026-11-02, against the published `v1.0.0` artifacts
+
+The whole table again, within the hour of publishing, and the first release
+built by the reworked `release.yml`, which reruns the full CI at the tagged ref
+before it builds.
+
+| Check | Evidence |
+|---|---|
+| Anonymous download | HTTP 200 on all seven assets with no token in the environment |
+| Checksums | `sha256sum -c`: 6 of 6 `OK`. Negative control: one byte appended gives `did NOT match` |
+| Buildinfo | All six carry `vcs.revision=f6f03617dc74...`, the tagged commit, with `vcs.modified=false`, `-trimpath=true`, `CGO_ENABLED=0` and the `GOOS`/`GOARCH` their names claim. Toolchain `go1.26.10`, the floor `go.mod` now requires |
+| Real format | Mach-O for darwin, ELF for linux (`statically linked`), PE32+ for windows, each with the architecture its name claims |
+| Leaked paths | Zero occurrences of `/home/runner` or a user directory in any of the six |
+| Attestation | `gh attestation verify` exits 0 on all six. Negative control: the one-byte-longer copy fails with HTTP 404 |
+| Reproducible | The tag rebuilt from a fresh clone with `go1.26.10` matches the published linux/amd64 binary in size, and its build ID's content component is identical (`wd8ga77wV3sO8_KBxAY6`). 58 bytes differ, not the 39 of `v0.3.1`: 38 inside the build ID's host components, and 20 that are exactly the descriptor of `.note.gnu.build-id`. Go has written that note since 1.24, derived from its own build ID, so it varies with the host the same way. Every differing byte was located; none is content |
+| Version stamp | The published `.exe` prints `ganimedes v1.0.0`, and its session header carries `"version":"v1.0.0"` |
+| Shipped behavior | The published `.exe` against the real filesystem server: `scan` found 14 tools; against a server that never answers, it reports the deadline in the wording fixed before the tag rather than `file already closed`; `move_file` on the deny-list returned `-32000` and the file stayed where it was; `verify` reported the log intact. It also verified a log written by `v0.1.0` and continued by this release |
+
+The real-client and browser checks of this release, Approve, Reject and the Host
+check, ran against the release candidate the same day and are under §L3. They
+were not repeated against the downloaded binary, which differs from that
+candidate only by the `scan` message fix it verified above.
+
 ## 2. Where Postman *might* re-enter (forward note, not a decision)
 
 The open question was: if milestone 4's approval page exposed JSON endpoints
