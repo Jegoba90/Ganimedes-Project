@@ -90,7 +90,7 @@ func TestLoad_TrailingData(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load accepted trailing data, want an error")
 	}
-	if !strings.Contains(err.Error(), "unexpected data") {
+	if !strings.Contains(err.Error(), "multiple JSON values") {
 		t.Errorf("error = %v, want it to mention unexpected trailing data", err)
 	}
 }
@@ -99,5 +99,41 @@ func TestLoad_TrailingData(t *testing.T) {
 func TestLoad_MissingFile(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "nope.json")); err == nil {
 		t.Fatal("Load on a missing file returned nil error, want an error")
+	}
+}
+
+// A policy file is not a last-member-wins format: a reviewer must not see one
+// deny-list while the decoder silently chooses another. Case aliases matter
+// too because encoding/json normally matches the struct fields that way.
+func TestLoad_RejectsAmbiguousPolicy(t *testing.T) {
+	for _, raw := range []string{
+		`{"deny":["payment.execute"],"deny":null}`,
+		`{"approve":["payment.execute"],"approve":[]}`,
+		`{"deny":["payment.execute"],"Deny":[]}`,
+		`{"command":"safe","COMMAND":"other"}`,
+		`{"DENY":["payment.execute"]}`,
+		`{"deny":["payment.execute"],"\u0064eny":[]}`,
+		`{"deny":["payment.\ud800execute"]}`,
+		"{\"deny\":[\"payment.\xffexecute\"]}",
+		`null`,
+		`[]`,
+		`"policy"`,
+		`{"deny":"payment.execute"}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if c, err := Load(write(t, raw)); err == nil {
+				t.Fatalf("ambiguous or invalid policy accepted: %+v", c)
+			}
+		})
+	}
+}
+
+// null lists retain their documented zero-value meaning; the restriction is on
+// an ambiguous document, not on an intentionally empty policy.
+func TestLoad_EmptyPolicy(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"deny":null,"approve":null}`} {
+		if _, err := Load(write(t, raw)); err != nil {
+			t.Fatalf("Load(%s): %v", raw, err)
+		}
 	}
 }
