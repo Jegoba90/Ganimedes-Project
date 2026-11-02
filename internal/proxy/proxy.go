@@ -21,15 +21,18 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/Jegoba90/Ganimedes-Project/internal/approval"
 	"github.com/Jegoba90/Ganimedes-Project/internal/audit"
 	"github.com/Jegoba90/Ganimedes-Project/internal/config"
+	"github.com/Jegoba90/Ganimedes-Project/internal/jsoncheck"
 	"github.com/Jegoba90/Ganimedes-Project/internal/policy"
 )
 
@@ -59,10 +62,10 @@ type Approver interface {
 // cfg.Deny and cfg.Approve drive the policy engine: a tools/call to a denied tool
 // is blocked before it reaches the server, and a tools/call to a tool on the
 // approval-list is paused for a human via appr (milestone 4). If log is non-nil,
-// every allowed, approved, and blocked tools/call is recorded; if log is nil, no
-// audit is written. With empty lists and a nil log, Run is a transparent
-// passthrough (milestone 1 behavior). Either way the forwarded wire bytes are
-// verbatim.
+// completed allowed/approved calls and blocked attempts are appended to the log;
+// append failures are reported on stderr. If log is nil, no audit is written.
+// With empty lists and a nil log, Run is a bounded byte passthrough (milestone 1
+// behavior). Either way the forwarded wire bytes are verbatim.
 //
 // appr is consulted only for tools on the approval-list; it may be nil when the
 // approval-list is empty. If a tool requires approval but appr is nil, the call
@@ -75,6 +78,10 @@ type Approver interface {
 // then reaps the process. It returns the first error encountered, or nil on a
 // clean shutdown.
 func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger, appr Approver) error {
+	return run(cfg, in, out, log, appr, shutdownGrace)
+}
+
+func run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger, appr Approver, grace time.Duration) error {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Stderr = os.Stderr // out-of-band: surface the real server's logs
 
@@ -82,14 +89,54 @@ func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger, appr
 	if err != nil {
 		return fmt.Errorf("wiring server stdin: %w", err)
 	}
-	serverOut, err := cmd.StdoutPipe()
+	// Own the stdout pipe ourselves. StdoutPipe lets Wait close its reader before
+	// unread data has drained, while an in-process pipe would hide stdout EOF
+	// until the process exited. A supplied *os.File has neither problem: Wait
+	// does not own its reader, and the read side sees the actual child's EOF.
+	serverOut, serverOutput, err := os.Pipe()
 	if err != nil {
+		_ = serverIn.Close() // no child was started and no protocol data exists
 		return fmt.Errorf("wiring server stdout: %w", err)
 	}
+	cmd.Stdout = serverOutput
 
 	if err := cmd.Start(); err != nil {
+		_ = serverIn.Close()  // no child owns these descriptors after Start failed
+		_ = serverOut.Close() // no protocol data exists after Start failed
+		_ = serverOutput.Close()
 		return fmt.Errorf("starting server %q: %w", cfg.Command, err)
 	}
+	defer func() {
+		// Cleanup is best-effort after the session's result has been chosen; an
+		// already closed pipe or reaped process cannot change that result.
+		_ = serverIn.Close()
+		_ = serverOut.Close()
+		_ = serverOutput.Close()
+		_ = cmd.Process.Kill()
+	}()
+	if err := serverOutput.Close(); err != nil {
+		_ = cmd.Process.Kill() // cleanup must reap the child even before pumps start
+		_ = cmd.Wait()         // the descriptor error is the primary failure
+		return fmt.Errorf("closing parent copy of server stdout: %w", err)
+	}
+	waited := make(chan error, 1)
+	outputDone := make(chan struct{})
+	drainTimedOut := make(chan struct{})
+	go func() {
+		err := cmd.Wait()
+		waited <- err
+		// A descendant can inherit stdout after the direct child exits. Give
+		// buffered output a bounded chance to drain, then release the reader;
+		// killing only the already exited child cannot close that descriptor.
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-outputDone:
+		case <-timer.C:
+			close(drainTimedOut)
+			_ = serverOut.Close() // interrupt a read held open by inherited stdout
+		}
+	}()
 
 	// The policy engine enforces the deny-list and the approval-list. With no
 	// rules it allows everything (milestone-1/2 passthrough), and it runs whether
@@ -102,6 +149,7 @@ func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger, appr
 	// so their line writes never interleave (Constitution Art. 3.2; the -race
 	// build in CI proves there is no data race).
 	clientOut := &syncWriter{w: out}
+	defer clientOut.close()
 
 	// Correlation state pairs a tools/call request with its response for the
 	// audit entry; it is only needed when a log is present.
@@ -135,28 +183,85 @@ func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger, appr
 		}
 	}
 
-	// Direction 1 runs in the background: a blocking read on the client must not
-	// hold up the server's output. On a normal shutdown the client closes its
-	// input, which unblocks this goroutine; closing the server's stdin then lets
-	// it see EOF and shut down.
+	// Input failure terminates the session instead of silently discarding the
+	// error. EOF gives the server a short grace period to drain its output and
+	// exit; a server that ignores EOF must not keep a disconnected session alive.
+	inputDone := make(chan struct{})
+	inputFailure := make(chan error, 1)
 	go func() {
-		_ = pump(in, serverIn, handleReq, true)
-		_ = serverIn.Close()
+		defer close(inputDone)
+		defer func() { _ = serverIn.Close() }() // EOF is the normal shutdown signal
+		if err := pump(in, serverIn, handleReq, true); err != nil {
+			select {
+			case <-outputDone:
+				return // closing session input can itself interrupt a blocked read
+			default:
+				inputFailure <- err
+				_ = cmd.Process.Kill() // unblock output after input failed
+			}
+		}
+	}()
+	go func() {
+		select {
+		case <-outputDone:
+			return
+		case <-inputDone:
+		}
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-outputDone:
+		case <-timer.C:
+			_ = cmd.Process.Kill() // an uncooperative child must not outlive EOF
+		}
 	}()
 
 	// Direction 2 is the one we wait on: the server closing its stdout signals
 	// the session is over.
-	if err := pump(serverOut, clientOut, handleResp, false); err != nil {
-		return fmt.Errorf("forwarding server output: %w", err)
+	outputErr := pump(serverOut, clientOut, handleResp, false)
+	close(outputDone)
+	if outputErr != nil {
+		_ = cmd.Process.Kill() // reap even when writing to the client failed
 	}
-
-	// All output has been read, so it is now safe to reap the process. Wait
-	// closes the stdout pipe, so it must come after the copy above.
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("server exited with error: %w", err)
+	// A closable input can be released when the server exits. An arbitrary
+	// io.Reader cannot be interrupted; callers supplying one own that lifecycle.
+	if closer, ok := in.(io.Closer); ok {
+		_ = closer.Close() // session input is no longer needed after server EOF
+	}
+	// Closing stdout also ends a session when the child remains alive. Waiting
+	// on the process without a deadline here would turn that EOF into a hang.
+	var waitErr error
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case waitErr = <-waited:
+	case <-timer.C:
+		_ = cmd.Process.Kill() // stdout ended but the child did not shut down
+		waitErr = <-waited
+	}
+	if outputErr != nil {
+		select {
+		case <-drainTimedOut:
+			return fmt.Errorf("server exited while its output stayed open: %w", exec.ErrWaitDelay)
+		default:
+		}
+		return fmt.Errorf("forwarding server output: %w", outputErr)
+	}
+	select {
+	case err := <-inputFailure:
+		return fmt.Errorf("forwarding client input: %w", err)
+	default:
+	}
+	if waitErr != nil {
+		return fmt.Errorf("server exited with error: %w", waitErr)
 	}
 	return nil
 }
+
+const (
+	maxMessageBytes = 16 << 20
+	shutdownGrace   = 5 * time.Second
+)
 
 // pump reads newline-delimited messages from src and forwards each one verbatim
 // to dst, giving an optional handler a chance to inspect (and, on the request
@@ -171,15 +276,14 @@ func Run(cfg config.Config, in io.Reader, out io.Writer, log *audit.Logger, appr
 // called afterwards purely to observe; its return value is ignored. A nil handle
 // means "always forward" (raw passthrough).
 //
-// It reads with bufio.Reader.ReadBytes rather than bufio.Scanner because a tool
-// result can be much larger than Scanner's 64KB token limit; ReadBytes grows as
-// needed. A final chunk without a trailing newline (EOF mid-line) is still
-// forwarded. pump returns nil at EOF (a normal session end) or the first read or
-// write error.
+// ReadSlice permits messages larger than Scanner's 64KB default while enforcing
+// a 16 MiB ceiling before any part of an oversized message is forwarded. A final
+// chunk without a trailing newline (EOF mid-line) is still forwarded. pump
+// returns nil at EOF or the first framing, read or write error.
 func pump(src io.Reader, dst io.Writer, handle func([]byte) bool, inspectFirst bool) error {
 	r := bufio.NewReader(src)
 	for {
-		line, err := r.ReadBytes('\n')
+		line, err := readMessage(r)
 		if len(line) > 0 {
 			if inspectFirst {
 				forward := true
@@ -187,12 +291,12 @@ func pump(src io.Reader, dst io.Writer, handle func([]byte) bool, inspectFirst b
 					forward = handle(line)
 				}
 				if forward {
-					if _, werr := dst.Write(line); werr != nil {
+					if werr := writeMessage(dst, line); werr != nil {
 						return werr
 					}
 				}
 			} else {
-				if _, werr := dst.Write(line); werr != nil {
+				if werr := writeMessage(dst, line); werr != nil {
 					return werr
 				}
 				if handle != nil {
@@ -209,6 +313,34 @@ func pump(src io.Reader, dst io.Writer, handle func([]byte) bool, inspectFirst b
 	}
 }
 
+// readMessage accumulates bounded fragments rather than allocating until an
+// attacker eventually sends a newline. An oversized message is never forwarded
+// partially; the session is terminated because continuing mid-frame is unsafe.
+func readMessage(r *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := r.ReadSlice('\n')
+		if len(fragment) > maxMessageBytes-len(line) {
+			return nil, fmt.Errorf("message exceeds %d-byte limit", maxMessageBytes)
+		}
+		line = append(line, fragment...)
+		if err != bufio.ErrBufferFull {
+			return line, err
+		}
+	}
+}
+
+func writeMessage(dst io.Writer, line []byte) error {
+	n, err := dst.Write(line)
+	if err != nil {
+		return err
+	}
+	if n != len(line) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
 // handleRequest inspects one client->server message and returns whether pump
 // should forward it to the real server.
 //
@@ -223,54 +355,18 @@ func pump(src io.Reader, dst io.Writer, handle func([]byte) bool, inspectFirst b
 //     like a deny instead of overwriting that call's pending entry (see
 //     pending.remember and idReuseMessage).
 //
-// Every other message — another method, or anything that is not JSON we
-// understand — is forwarded verbatim and not audited. One shape is a deliberate
-// exception to that: a JSON-RPC batch (a line that is a top-level array instead
-// of an object) is refused outright rather than forwarded, because a tools/call
-// hidden inside one would otherwise reach the server with no policy check and no
-// audit record — see blockBatch.
+// Valid messages for other methods are forwarded verbatim. Invalid JSON,
+// ambiguous field spellings, malformed envelopes and batches are refused rather
+// than handed to a server whose parser might interpret them as a tools/call.
+// These checks are installed only when policy or auditing is active; the mode
+// with neither remains a bounded byte passthrough. See inspectRequest and
+// blockBatch for why ambiguity must not become permission.
 //
 // A write or audit failure on a block path is reported to stderr and swallowed:
 // the call is still blocked (fail-closed, Constitution Art. 2.1) and the proxy
 // stays up rather than taking the agent down over a logging problem.
 func handleRequest(line []byte, eng *policy.Engine, p *pending, appr Approver, log *audit.Logger, client io.Writer) (forward bool) {
-	var msg struct {
-		ID     json.RawMessage `json:"id"`
-		Method string          `json:"method"`
-		Params struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(line, &msg); err != nil {
-		if isJSONArray(line) {
-			return blockBatch(client, log, line)
-		}
-		return true // not JSON we can read; forward verbatim, do not audit
-	}
-	// Only a correlated tools/call is in scope. A tools/call always carries an id
-	// because it expects a response; without one there is nothing to correlate
-	// and nothing to answer.
-	if msg.Method != "tools/call" || len(msg.ID) == 0 {
-		return true
-	}
-
-	tool, args := msg.Params.Name, msg.Params.Arguments
-	switch eng.Decide(tool) {
-	case policy.Deny:
-		return blockCall(client, log, msg.ID, args, tool, audit.DecisionDeny, denyMessage(tool))
-	case policy.RequireApproval:
-		return handleApproval(client, p, appr, log, msg.ID, tool, args)
-	default: // policy.Allow
-		// Remember it so recordResponse can complete the entry when the server
-		// answers. Only needed when auditing. remember reports false if this id
-		// is already waiting on another in-flight call, which this call must not
-		// be allowed to silently overwrite (see idReuseMessage).
-		if p != nil && !p.remember(msg.ID, tool, args, audit.DecisionAllow) {
-			return blockCall(client, log, msg.ID, args, tool, audit.DecisionDeny, idReuseMessage(tool))
-		}
-		return true
-	}
+	return inspectRequest(line, eng, p, appr, log, client)
 }
 
 // handleApproval pauses a tools/call for a human decision and acts on the result.
@@ -291,8 +387,10 @@ func handleApproval(client io.Writer, p *pending, appr Approver, log *audit.Logg
 		// unaudited or misattributed entry. The approval stands on its own
 		// merits and does not override that (Art. 2.1: fails closed wherever
 		// there is still a live choice to make).
-		if p != nil && !p.remember(id, tool, args, audit.DecisionApproved) {
-			return blockCall(client, log, id, args, tool, audit.DecisionDeny, idReuseMessage(tool))
+		if p != nil {
+			if err := p.remember(id, tool, args, audit.DecisionApproved); err != nil {
+				return blockCall(client, log, id, args, tool, audit.DecisionDeny, pendingMessage(tool, err))
+			}
 		}
 		return true
 	case approval.Rejected:
@@ -320,15 +418,13 @@ func blockCall(client io.Writer, log *audit.Logger, id, args json.RawMessage, to
 	return false // blocked: the real server never sees this call
 }
 
-// isJSONArray reports whether line is a syntactically valid JSON array. It is
-// only ever called after the single-message struct unmarshal in handleRequest
-// has already failed, to tell a genuine JSON-RPC batch (which parses as an
-// array) apart from a line that is not usable JSON at all (which parses as
-// neither), since the two need opposite treatment: a batch is refused, garbage
-// is forwarded blind exactly as before.
+// isJSONArray distinguishes a JSON-RPC batch from other invalid request shapes.
+// Checking the first byte matters because decoding JSON null into a Go slice
+// also succeeds, although null is not an array and has no batch elements.
 func isJSONArray(line []byte) bool {
 	var probe []json.RawMessage
-	return json.Unmarshal(line, &probe) == nil
+	trimmed := bytes.TrimSpace(line)
+	return len(trimmed) > 0 && trimmed[0] == '[' && json.Unmarshal(line, &probe) == nil
 }
 
 // blockBatch refuses an entire JSON-RPC batch request outright. v0's policy
@@ -350,7 +446,11 @@ func blockBatch(client io.Writer, log *audit.Logger, line []byte) (forward bool)
 		fmt.Fprintf(os.Stderr, "ganimedes: writing batch refusal failed: %v\n", err)
 	}
 	if log != nil {
-		if _, err := log.Append(batchTool, json.RawMessage(line), nil, policyErrorObject(batchMessage), audit.DecisionDeny); err != nil {
+		args := json.RawMessage(line)
+		if jsoncheck.Validate(line) != nil {
+			args = rawRequest(line)
+		}
+		if _, err := log.Append(batchTool, args, nil, policyErrorObject(batchMessage), audit.DecisionDeny); err != nil {
 			fmt.Fprintf(os.Stderr, "ganimedes: audit append failed: %v\n", err)
 		}
 	}
@@ -380,11 +480,9 @@ func batchIDs(line []byte) []json.RawMessage {
 	}
 	ids := make([]json.RawMessage, 0, len(elems))
 	for _, e := range elems {
-		var withID struct {
-			ID json.RawMessage `json:"id"`
-		}
-		if json.Unmarshal(e, &withID) == nil && len(withID.ID) > 0 {
-			ids = append(ids, withID.ID)
+		var msg map[string]json.RawMessage
+		if jsoncheck.Validate(e) == nil && json.Unmarshal(e, &msg) == nil && validID(msg["id"]) && !hasFieldAlias(msg, "id") {
+			ids = append(ids, msg["id"])
 		}
 	}
 	return ids
@@ -409,7 +507,7 @@ func writeBatchRefusal(client io.Writer, ids []json.RawMessage) error {
 		return fmt.Errorf("encoding batch refusal: %w", err)
 	}
 	b = append(b, '\n')
-	if _, err := client.Write(b); err != nil {
+	if err := writeMessage(client, b); err != nil {
 		return fmt.Errorf("writing batch refusal: %w", err)
 	}
 	return nil
@@ -510,7 +608,7 @@ func writePolicyError(client io.Writer, id json.RawMessage, message string) erro
 		return fmt.Errorf("encoding policy error response: %w", err)
 	}
 	b = append(b, '\n')
-	if _, err := client.Write(b); err != nil {
+	if err := writeMessage(client, b); err != nil {
 		return fmt.Errorf("writing policy error response: %w", err)
 	}
 	return nil
@@ -522,43 +620,75 @@ func writePolicyError(client io.Writer, id json.RawMessage, message string) erro
 // guarding it keeps their line writes from interleaving. Every write in the proxy
 // is a single full line, so serialized writes are also atomic per message.
 type syncWriter struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu     sync.Mutex
+	w      io.Writer
+	closed bool
 }
 
 func (s *syncWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return 0, io.ErrClosedPipe
+	}
 	return s.w.Write(p)
 }
 
-// pendingCall is a tools/call seen on the request side, waiting for its
-// response to arrive on the other direction so the pair can be logged together.
-// decision records how the call was cleared to reach the server (allow by
-// default, or approved by a human) so recordResponse logs the right verdict.
+func (s *syncWriter) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
+// pendingCall reserves a client request id until its response arrives. An empty
+// tool marks a non-tool request: it reserves its id but produces no audit entry.
+// For tools/call, decision records how it was cleared (allow or human approval)
+// so recordResponse logs the right verdict with the corresponding result.
 type pendingCall struct {
 	tool     string
 	args     json.RawMessage
 	decision string
+	size     int
 }
 
-// pending correlates tools/call requests with their responses by JSON-RPC id.
+// pending correlates client requests with their responses by JSON-RPC id.
 // The request side (remember) and the response side (recordResponse) run on
 // different goroutines, so access is guarded by a mutex.
 type pending struct {
 	mu    sync.Mutex
 	calls map[string]pendingCall
+	bytes int
+}
+
+// These bounds keep an unanswered server from retaining an unlimited history
+// of call arguments. Releasing entries by age would permit late responses to be
+// attributed to a newer call, so capacity exhaustion refuses new work instead.
+const (
+	maxPendingCalls = 1024
+	maxPendingBytes = 64 << 20
+)
+
+var (
+	errPendingIDReuse = errors.New("request id already in flight")
+	errPendingFull    = errors.New("pending audit capacity exhausted")
+)
+
+func pendingMessage(tool string, err error) string {
+	if errors.Is(err, errPendingIDReuse) {
+		return idReuseMessage(tool)
+	}
+	return fmt.Sprintf("blocked by Ganimedes: pending audit capacity exhausted for tool %q (maximum %d requests or %d bytes); wait for outstanding responses", tool, maxPendingCalls, maxPendingBytes)
 }
 
 func newPending() *pending {
 	return &pending{calls: make(map[string]pendingCall)}
 }
 
-// remember stores a cleared tools/call keyed by its id so the matching response
-// can complete it on the other direction. decision is the verdict that cleared it
-// (allow or approved), carried through to the audit entry.
+// remember reserves a client request's id so the matching response can complete
+// it on the other direction. For tools/call, decision is the verdict that cleared
+// it (allow or approved), carried through to the audit entry.
 //
-// It reports false, and stores nothing, if id already has an entry: that means
+// It returns an error, and stores nothing, if id already has an entry: that means
 // another call sharing the same JSON-RPC id is still in flight, waiting on its
 // own response, and a second entry under the same key would silently overwrite
 // the first rather than queue behind it — there is no way to tell, from the
@@ -573,18 +703,23 @@ func newPending() *pending {
 // rest of the session, and a later call reusing that id is refused too. No
 // expiry is used because a TTL short enough to release a stuck id is also
 // short enough to release one whose response is merely slow, which would put
-// the misattribution this guards against back on the table. In practice every
-// MCP client counts ids upward and never revisits one, so a held id costs
-// nothing; a client that cycles ids would lose one slot per unanswered call.
-func (p *pending) remember(id json.RawMessage, tool string, args json.RawMessage, decision string) bool {
+// the misattribution this guards against back on the table. Clients that keep
+// ids unique avoid reuse collisions, but unanswered calls still consume the
+// bounded pending capacity until the session ends.
+func (p *pending) remember(id json.RawMessage, tool string, args json.RawMessage, decision string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	key := idKey(id)
 	if _, inFlight := p.calls[key]; inFlight {
-		return false
+		return errPendingIDReuse
 	}
-	p.calls[key] = pendingCall{tool: tool, args: args, decision: decision}
-	return true
+	size := len(key) + len(tool) + len(args)
+	if len(p.calls) >= maxPendingCalls || size > maxPendingBytes-p.bytes {
+		return errPendingFull
+	}
+	p.calls[key] = pendingCall{tool: tool, args: args, decision: decision, size: size}
+	p.bytes += size
+	return nil
 }
 
 // recordResponse inspects one server->client message. If its id matches a
@@ -596,41 +731,30 @@ func (p *pending) remember(id json.RawMessage, tool string, args json.RawMessage
 // the log must not take the agent down. Losing an audit record is the lesser
 // harm and is made visible on stderr.
 func (p *pending) recordResponse(line []byte, log *audit.Logger) {
-	var msg struct {
-		ID     json.RawMessage `json:"id"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if err := json.Unmarshal(line, &msg); err != nil {
+	var msg map[string]json.RawMessage
+	if jsoncheck.Validate(line) != nil || json.Unmarshal(line, &msg) != nil {
 		return
 	}
-	if len(msg.ID) == 0 {
-		return // a notification or something without an id: not a response we track
+	if !isResponse(msg) || !validID(msg["id"]) {
+		return // server requests and ambiguous messages cannot finish a client call
 	}
 
-	key := idKey(msg.ID)
+	key := idKey(msg["id"])
 	p.mu.Lock()
 	call, ok := p.calls[key]
 	if ok {
 		delete(p.calls, key)
+		p.bytes -= call.size
 	}
 	p.mu.Unlock()
-	if !ok {
+	if !ok || call.tool == "" {
 		return // a response to something that was not a tracked tools/call
 	}
 
 	// A response reaching here was for a call the proxy forwarded: either allowed
 	// by default or approved by a human (blocked calls are never forwarded, so the
 	// server never answers them). call.decision carries which one it was.
-	if _, err := log.Append(call.tool, call.args, msg.Result, msg.Error, call.decision); err != nil {
+	if _, err := log.Append(call.tool, call.args, msg["result"], msg["error"], call.decision); err != nil {
 		fmt.Fprintf(os.Stderr, "ganimedes: audit append failed: %v\n", err)
 	}
-}
-
-// idKey turns a JSON-RPC id (a number or a string) into a map key. The raw JSON
-// bytes are used directly so a numeric id and a string id that look alike (1 vs
-// "1") stay distinct; surrounding whitespace is trimmed so the request and
-// response forms of the same id compare equal.
-func idKey(id json.RawMessage) string {
-	return string(bytes.TrimSpace(id))
 }
