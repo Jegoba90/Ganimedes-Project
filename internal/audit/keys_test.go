@@ -102,3 +102,89 @@ func TestLoadOrCreateSigningKey_CorruptExisting(t *testing.T) {
 		t.Fatal("LoadOrCreateSigningKey silently accepted a corrupt key file, want an error")
 	}
 }
+
+func TestLoadOrCreateSigningKey_PreservesOrphanedPublicKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "signing.key")
+	_, pub := newTestKey(t)
+	pubPath := PublicKeyPath(keyPath)
+	if err := writePublicKey(pubPath, pub); err != nil {
+		t.Fatalf("writePublicKey: %v", err)
+	}
+	original, err := os.ReadFile(pubPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if _, _, err := LoadOrCreateSigningKey(keyPath); err == nil {
+		t.Fatal("a historical public key was replaced when its private key was missing")
+	}
+	after, err := os.ReadFile(pubPath)
+	if err != nil || !bytes.Equal(original, after) {
+		t.Fatalf("historical public key changed: %v", err)
+	}
+	if _, err := os.Lstat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused keypair creation left a new private key: %v", err)
+	}
+}
+
+func TestLoadOrCreateSigningKey_RepairsMissingPublicKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "signing.key")
+	priv, pub := newTestKey(t)
+	if err := writePrivateKey(keyPath, priv); err != nil {
+		t.Fatalf("writePrivateKey: %v", err)
+	}
+	loaded, created, err := LoadOrCreateSigningKey(keyPath)
+	if err != nil || created || !bytes.Equal(loaded, priv) {
+		t.Fatalf("repair changed the private key: created=%v, err=%v", created, err)
+	}
+	repaired, err := LoadPublicKey(PublicKeyPath(keyPath))
+	if err != nil || !bytes.Equal(repaired, pub) {
+		t.Fatalf("missing public key was not repaired: %v", err)
+	}
+}
+
+func TestLoadOrCreateSigningKey_RejectsMismatchedPublicKey(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		keyPath := filepath.Join(t.TempDir(), "signing.key")
+		priv, _ := newTestKey(t)
+		_, wrongPub := newTestKey(t)
+		if err := writePrivateKey(keyPath, priv); err != nil {
+			t.Fatalf("writePrivateKey: %v", err)
+		}
+		pubPath := PublicKeyPath(keyPath)
+		if err := writePublicKey(pubPath, wrongPub); err != nil {
+			t.Fatalf("writePublicKey: %v", err)
+		}
+		if corrupt {
+			if err := os.WriteFile(pubPath, []byte("invalid public key"), 0o644); err != nil {
+				t.Fatalf("corrupting public key: %v", err)
+			}
+		}
+		original, err := os.ReadFile(pubPath)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if _, _, err := LoadOrCreateSigningKey(keyPath); err == nil {
+			t.Fatalf("incompatible public key accepted (corrupt=%v)", corrupt)
+		}
+		after, err := os.ReadFile(pubPath)
+		if err != nil || !bytes.Equal(original, after) {
+			t.Fatalf("incompatible public key was overwritten: %v", err)
+		}
+	}
+}
+
+func TestWritePublicKeyNeverReplacesExistingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "signing.pub")
+	_, first := newTestKey(t)
+	_, second := newTestKey(t)
+	if err := writePublicKey(path, first); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := writePublicKey(path, second); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second write = %v, want os.ErrExist", err)
+	}
+	loaded, err := LoadPublicKey(path)
+	if err != nil || !bytes.Equal(loaded, first) {
+		t.Fatalf("existing key changed: %v", err)
+	}
+}
