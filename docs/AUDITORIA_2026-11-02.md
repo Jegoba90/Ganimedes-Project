@@ -3,7 +3,11 @@
 **Fecha:** 2 de noviembre de 2026.  
 **Base revisada:** `ccd6d8dde481` y cambios locales de esta auditoría.  
 **Entorno de ejecución:** Windows/amd64, CGO desactivado.  
-**Resultado:** hallazgos reproducidos corregidos; controles locales aprobados.
+**Resultado:** hallazgos reproducidos corregidos; controles locales aprobados.  
+**Estado posterior (mismo día):** correcciones revisadas, integradas en `main`
+mediante el PR #1 y publicadas como `v1.0.0`. El seguimiento, con seis hallazgos
+nuevos encontrados al verificar, está en §8; las secciones 1 a 7 conservan el
+informe tal como se entregó.
 
 ## 1. Dictamen ejecutivo
 
@@ -212,7 +216,118 @@ Antes de una publicación corresponde confirmar Linux/macOS/Windows en CI,
 detector de carreras en Linux y smokes del cliente y navegador reales. No se
 atribuye a la revisión local una evidencia que esas ejecuciones aún no aportaron.
 
-## 8. Referencias técnicas contrastadas
+## 8. Seguimiento: de la auditoría a `v1.0.0`
+
+Esta sección registra lo que ocurrió después de entregar el informe: una
+revisión independiente de sus conclusiones, las verificaciones que §7 dejaba
+pendientes y los defectos que esas verificaciones encontraron. Cada afirmación
+se apoya en una ejecución, no en una lectura.
+
+### 8.1. Revisión del informe
+
+Se repitieron localmente los controles de §5 y coincidieron cifra por cifra:
+compilación, vet, formato, pruebas y cobertura por paquete. Se leyó el código de
+las correcciones centrales (`internal/proxy/request.go`, `internal/jsoncheck`,
+el `content_hash`, el control de Host) y se confirmó el criterio: toda
+interpretación dudosa termina en denegación. Las severidades de §3 se
+consideraron razonables.
+
+La revisión discrepó en un punto. §6.5 trataba el lock huérfano como riesgo
+residual "tras un crash", y no lo era: era el cierre normal (S1).
+
+### 8.2. Hallazgos posteriores
+
+| ID | Severidad | Hallazgo comprobado | Corrección |
+|---|---|---|---|
+| S1 | Alta, operativa | El lock `.lock` creado con O_EXCL (H09) sobrevivía a que el cliente MCP matara el proceso, el cierre habitual: sin manejo de señales no se ejecuta ningún `defer`. Todo arranque posterior fallaba hasta borrarlo a mano. Reproducido con el binario real. | Lock del kernel sobre el propio log: `flock` en Unix, `LockFileEx` en Windows, sobre un byte fuera del contenido porque allí los locks son obligatorios. El sistema lo libera al morir el proceso y cubre hardlinks, el límite que §6.5 dejaba abierto. En otras plataformas el log no se abre. |
+| S2 | Media | `verify` tomaba cada argumento como ruta del log, quedándose con el último. `verify a.jsonl b.jsonl` verificaba solo `b` e informaba OK aunque `a` estuviera manipulado; un flag mal escrito se buscaba como archivo. Encontrado al comprobar los códigos de salida que `v1.0.0` iba a prometer. | Una sola ruta; una segunda ruta o un flag desconocido son error de uso (código 2). |
+| S3 | Baja, CI | El gate de cobertura (H12) nunca podía pasar en Windows: PowerShell parte `-coverprofile=coverage.out` en el punto y el perfil se escribía como `coverage`. Primer fallo real del PR #1. | Argumento entre comillas, con un comentario que explica por qué. |
+| S4 | Baja, CI | Dependabot (H12) abrió un PR para `codeql-action/init` y otro para `analyze`; cada uno mezclaba v3 y v4 y CodeQL lo rechazaba, así que ninguno podía pasar. | Grupo de Dependabot para actualizar ambos juntos; el PR agrupado pasó. |
+| S5 | Baja, uso | Al vencer su plazo, `scan` decía `read \|0: file already closed`, porque H10 cierra las tuberías. v0.3.3 al menos sugería "timed out?". Apareció en la prueba con cliente real, mientras `npx` descargaba el servidor. | El mensaje dice que venció el plazo y nombra la descarga como causa probable; un servidor que se cae no se atribuye al plazo. |
+| S6 | Compatibilidad | Un `verify` de v0.3.3 marca como `TAMPERED` un log nuevo y legítimo, porque no conoce `content_hash` (§4 lo anticipaba sin haberlo ejecutado). | Documentado en `SECURITY.md`, el README y las notas de versión; es uno de los motivos de la versión mayor. |
+
+Cada corrección de S1, S2 y S5 tiene pruebas que se vieron fallar al romper el
+código a propósito, con estas mutaciones:
+
+- **S1:** sin lock; con el O_EXCL original; con el lock de Windows sobre el
+  contenido; con un handle de solo escritura, que Windows se niega a bloquear.
+- **S2:** el análisis de argumentos anterior, que devolvía 0 con el log
+  manipulado delante.
+- **S5:** ocultar el plazo vencido, y culpar al plazo de una caída.
+
+### 8.3. Verificaciones que §7 dejaba pendientes
+
+- **CI remoto.** Verde en Linux, macOS y Windows, con el detector de carreras en
+  Linux, para el PR #1, para `main` tras cada integración y dentro del propio
+  `release.yml` en el commit del tag.
+- **Compatibilidad hacia atrás.** Se compilaron `v0.1.0`, `v0.2.0` y `v0.3.3`
+  desde sus tags. Cada una escribió un log con una llamada real; el binario
+  nuevo lo verificó, siguió escribiendo en él y verificó el log mixto.
+- **Cliente real.** Claude Code 2.1.314 como cliente, el servidor oficial
+  `@modelcontextprotocol/server-filesystem@2026.8.31` y una persona en el
+  navegador. Pasaron lectura permitida, deny antes del servidor, Approve, Reject,
+  el rechazo de `localhost` por Host en un navegador real, las cabeceras
+  anti-iframe en la página viva (sin intentar enmarcarla) y `verify` antes y
+  después de manipular. Detalle en `TESTING.md` §L3.
+- **Artefactos publicados.** Los seis binarios de `v1.0.0` se verificaron desde
+  fuera:
+  - descarga anónima, checksums, buildinfo del commit del tag, formato real,
+    ausencia de rutas filtradas y attestations, con controles negativos;
+  - reconstrucción reproducible desde un clon limpio, con contenido idéntico.
+    Los 58 bytes distintos se localizaron uno a uno: 38 en el build ID y 20 en
+    `.note.gnu.build-id`, que Go deriva de él desde 1.24.
+
+  Detalle en `TESTING.md`, Release artifacts.
+
+### 8.4. Integración y publicación
+
+Los cambios entraron en `main` en commits separados por hallazgo, cada uno
+compilando y pasando sus pruebas por sí solo, sin commits de merge:
+
+- **Correcciones de la auditoría:** del `8472195` al `1175fac`.
+- **Seguimiento:** `d71ec40`, `603b083`, `7ce3d79`, `df3a45d` y los registros
+  de pruebas.
+- **Dependabot:** cinco actualizaciones de Actions (#2, #3, #6, #7, #8). Cada SHA
+  se comprobó con `git ls-remote` contra las etiquetas del repositorio oficial
+  antes de integrarla.
+
+`v1.0.0` se publicó sobre `f6f0361` con una promesa de estabilidad escrita
+(README, "Stability"): dentro de 1.x no se rompen comandos, códigos de salida,
+configuraciones ni la verificación de logs existentes. El Art. 1.1 de la
+Constitución se aclaró a "Ganimedes usa solo la biblioteca estándar", versión
+1.1.1, para que no pareciera caducar con la v0. El README se regeneró con
+salidas reales del binario publicado.
+
+### 8.5. Evaluación al cierre
+
+Puntuación global: **7 sobre 10**. La media combina ingeniería sólida con un
+producto todavía estrecho.
+
+| Dimensión | Nota | Motivo |
+|---|:---:|---|
+| Cadena de publicación | 9 | Pins verificados, procedencia, binarios reproducibles, CI en el tag |
+| Honestidad documental | 8,5 | Declara límites y lo no probado; hubo ejemplos que corregir |
+| Calidad del código | 8 | stdlib-only, fail-closed, razonamiento escrito; pero 14 defectos reales sobrevivieron a una revisión previa que lo daba por limpio |
+| Pruebas | 8 | Mutaciones, tres sistemas, detector de carreras y cliente real; la prueba con cliente real no está automatizada |
+| Seguridad de lo prometido | 7,5 | Cerrados bypasses y manipulaciones; abierto TD-8 |
+| Alcance del producto | 5 | Un servidor stdio, política por nombre y permisiva por defecto, sin redacción |
+| Madurez y adopción | 3 | Sin usuarios reales conocidos |
+
+### 8.6. Riesgo que sigue abierto
+
+Los límites de §6 se mantienen, salvo el lock de §6.5, cerrado por S1. El
+siguiente trabajo recomendado es **TD-8**: hoy el log demuestra que no se
+alteró, pero no que esté completo. Una llamada sin respuesta o una escritura
+fallida no dejan rastro, y sin un ancla externa no se detecta que falte la cola.
+Cerrarlo exige una decisión de producto entre disponibilidad y garantía.
+
+`docs/CODE_REVIEW.md`, que §1 preservó, se revisó entero. Era una revisión de
+`v0.3.3` que daba el árbol por limpio. Sus conclusiones quedan refutadas por §3,
+sus tres primeros gaps están cerrados y los otros dos ya están documentados en
+`DESIGN.md` y `PRODUCT_SPEC.md`. Nunca estuvo versionado; se recomienda retirarlo
+del árbol de trabajo, y se guardó una copia fuera del repositorio.
+
+## 9. Referencias técnicas contrastadas
 
 - [RFC 8785, JCS](https://www.rfc-editor.org/rfc/rfc8785.txt): dominio de Unicode,
   unicidad de miembros y modelo numérico empleado por el sello.
