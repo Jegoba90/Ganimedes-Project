@@ -198,7 +198,7 @@ jobs:
 
       # Kept for dry runs and as a fallback copy of what a tag published.
       - name: 📦 Upload artifacts to the run
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ganimedes-${{ steps.version.outputs.version }}
           path: dist/
