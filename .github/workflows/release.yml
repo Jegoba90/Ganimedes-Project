@@ -2,7 +2,7 @@ name: 🚀 Release
 
 # Two ways in:
 #
-#   * push a tag `vX.Y.Z`  -> build, verify, and publish a GitHub Release.
+#   * push a tag `vX.Y.Z`  -> build, verify, publish a GitHub Release and GHCR image.
 #   * workflow_dispatch    -> build and verify only, artifacts land in the run
 #                             summary and nothing is published. This exists so a
 #                             broken release pipeline is discovered on a dry run
@@ -33,11 +33,12 @@ jobs:
   release:
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write # create the Release and upload its assets
       id-token: write # Sigstore signs the attestation against this run's OIDC token
       attestations: write # record the provenance statement against the repository
+      packages: write # publish the optional image; login/push are gated on tags
     env:
       # Ship exactly what CI tested: a fully static, cgo-free binary
       # (Constitution Art. 5.1). Cross-compiling is free for us precisely
@@ -61,7 +62,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             version="${GITHUB_REF_NAME}"
             if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error::release tags must have the form vX.Y.Z"
@@ -204,6 +205,99 @@ jobs:
           path: dist/
           retention-days: 14
 
+      # The default runner's classic image store cannot load a multi-platform
+      # OCI archive. Use containerd so the dry run can inspect the same archive
+      # that a tag run will push, without another build or an emulator: the two
+      # Linux executables were already cross-compiled above.
+      - name: Set up Docker with the containerd image store
+        uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6 # v5.7.0
+        with:
+          version: v29.9.2
+          daemon-config: |
+            {"features":{"containerd-snapshotter":true}}
+
+      - name: Package both Linux binaries as an OCI image
+        id: container
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PREFIX: ${{ steps.version.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # OCI tags cannot contain the '+' in our dev version. A dry run gets
+          # an explicitly non-release tag; a release keeps its validated vX.Y.Z.
+          tag="${VERSION}"
+          if [ "${GITHUB_EVENT_NAME}" != "push" ] || [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            tag="dev-${GITHUB_SHA}"
+          fi
+          for arch in amd64 arm64; do
+            mkdir -p "dist/container/linux/${arch}"
+            cp "dist/${PREFIX}_linux_${arch}" "dist/container/linux/${arch}/ganimedes"
+          done
+          archive="${RUNNER_TEMP}/ganimedes-image.tar"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg "VERSION=${VERSION}" \
+            --build-arg "REVISION=${GITHUB_SHA}" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "index:org.opencontainers.image.description=Local governance and verifiable audit for MCP tool calls" \
+            --annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+            --provenance=false \
+            --tag "${image}:${tag}" \
+            --output "type=oci,dest=${archive}" .
+          # Check that the archive actually contains both promised platforms.
+          layout="${RUNNER_TEMP}/ganimedes-oci"
+          mkdir -p "${layout}"
+          tar -xf "${archive}" -C "${layout}"
+          digest="$(jq -er '.manifests | select(length == 1) | .[0].digest | select(test("^sha256:[0-9a-f]{64}$"))' "${layout}/index.json")"
+          jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64","linux/arm64"]' \
+            "${layout}/blobs/sha256/${digest#sha256:}"
+          docker load --input "${archive}"
+          got="$(docker run --rm --platform linux/amd64 --network none --read-only "${image}:${tag}" version)"
+          [ "${got}" = "ganimedes ${VERSION}" ]
+          # ARM is packaged and inspected, not executed on this amd64 runner.
+          # The Sigstore step below supplies provenance for the image digest;
+          # disabling BuildKit's separate default provenance avoids advertising
+          # an unsigned build record as that signed evidence (Art. 2.4).
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the OCI archive for inspection on dry runs too
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ganimedes-container-${{ steps.container.outputs.tag }}
+          path: ${{ runner.temp }}/ganimedes-image.tar
+          retention-days: 14
+
+      # No registry credentials are used on a manual dry run. A maintainer must
+      # deliberately push a release tag to publish, just as for the binaries.
+      - name: Publish the checked image to GHCR
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.container.outputs.image }}
+          TAG: ${{ steps.container.outputs.tag }}
+          DIGEST: ${{ steps.container.outputs.digest }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GH_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE}:${TAG}"
+          # Refuse to attest a different index if importing or pushing changed
+          # its bytes: the signed subject must be the archive we checked.
+          remote="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{json .Manifest}}' | jq -er '.digest')"
+          [ "${remote}" = "${DIGEST}" ]
+          printf '### Container image\n\n`%s:%s`\n\n`%s@%s`\n' \
+            "${IMAGE}" "${TAG}" "${IMAGE}" "${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest the published container digest
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-name: ${{ steps.container.outputs.image }}
+          subject-digest: ${{ steps.container.outputs.digest }}
+          push-to-registry: true
+
       # Not gated on tags: a dry run renders the notes too, and prints them, so
       # the last step before publishing is not also the least rehearsed one.
       # What changed in a release is written by hand, per version, in
@@ -225,7 +319,7 @@ jobs:
             # backticks and dollar signs without escaping them for this shell.
             { echo; cat "${notes}"; } >> release-notes.md
             echo "spliced in ${notes}"
-          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             echo "::error::missing required release notes at ${notes}"
             exit 1
           else
@@ -277,10 +371,11 @@ jobs:
           cat release-notes.md
 
       - name: 🚀 Publish the GitHub Release
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          PREFIX: ${{ steps.version.outputs.prefix }}
         run: |
           set -euo pipefail
           # --verify-tag refuses to invent a tag: the tag must already exist on
@@ -289,4 +384,4 @@ jobs:
             --title "Ganimedes ${VERSION}" \
             --notes-file release-notes.md \
             --verify-tag \
-            dist/*
+            "dist/${PREFIX}"_* dist/SHA256SUMS

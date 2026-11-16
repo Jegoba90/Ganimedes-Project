@@ -4,6 +4,21 @@
   <img src="assets/ganimedes-title.svg" alt="Ganimedes" width="384" align="middle">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Jegoba90/Ganimedes-Project/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Jegoba90/Ganimedes-Project/ci.yml?branch=main&amp;event=push&amp;style=flat-square&amp;label=CI" alt="CI status on main"></a>
+  <a href="https://github.com/Jegoba90/Ganimedes-Project/releases/latest"><img src="https://img.shields.io/github/v/release/Jegoba90/Ganimedes-Project?style=flat-square&amp;color=8b5cf6" alt="Latest release"></a>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/Jegoba90/Ganimedes-Project?style=flat-square&amp;logo=go&amp;logoColor=white" alt="Required Go version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Jegoba90/Ganimedes-Project?style=flat-square&amp;color=8b5cf6" alt="Apache-2.0 license"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/dependencies-stdlib%20only-8b5cf6?style=flat-square" alt="Dependencies: Go standard library only"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#see-it-in-thirty-seconds">Demo</a> &middot;
+  <a href="docs/DESIGN.md">Design</a> &middot;
+  <a href="SECURITY.md">Security</a>
+</p>
+
 > The governance and security layer for autonomous AI agents.
 > Control and prove what AI agents **do**, not just what they know.
 
@@ -322,6 +337,26 @@ Building from source with `go install` (at the top of this section) sidesteps
 the question differently: nothing was built elsewhere, so there is no origin to
 prove. The project has no third-party dependencies, so the only code involved is
 the code in this repository.
+
+### Container image (optional)
+
+The release workflow also packages the Linux binary for `amd64` and `arm64` in
+`ghcr.io/jegoba90/ganimedes-project`. Published tags appear under
+[Packages](https://github.com/Jegoba90/Ganimedes-Project/pkgs/container/ganimedes-project);
+use a version listed there. Releases made before container packaging was added
+do not acquire an image retroactively.
+
+```sh
+docker run --rm ghcr.io/jegoba90/ganimedes-project:<version> version
+```
+
+This image contains the Ganimedes binary, with no shell or MCP server runtime.
+Use it to verify mounted logs or copy `/ganimedes` into an image that already
+contains your server. `run` and `scan` need that server inside the same container;
+the loopback approval page is not exposed by `docker -p`. See the
+[container guide](docs/CONTAINERS.md) for log mounts, provenance verification,
+local builds and publication. The standalone binary remains available without
+Docker.
 
 ### Wrap a server
 

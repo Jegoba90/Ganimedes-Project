@@ -32,6 +32,13 @@ page is the one to use. The README's install commands write it as `<version>`,
 a placeholder to substitute, not a literal to paste. On Linux and macOS the
 downloaded file also needs `chmod +x`.
 
+An optional Linux container image is configured at
+`ghcr.io/jegoba90/ganimedes-project`; use only a tag listed in the repository's
+Packages section. It contains `/ganimedes`, no shell or MCP server runtime.
+For `run`/`scan`, the wrapped server must be installed in a derived image;
+`docker -p` does not expose the loopback approval page. See
+[the container guide](https://github.com/Jegoba90/Ganimedes-Project/blob/main/docs/CONTAINERS.md).
+
 ## Wrap a server
 
 Given an existing MCP client config entry:

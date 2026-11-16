@@ -38,7 +38,7 @@ instead of at the server directly. That is the adoption win.
 | 4 | **Human-in-the-loop** | When a tool requires approval: pause, show it to a human, wait for approve/reject, with timeout (no answer = deny). | Medium-high (UX) |
 | 5 | **Hash-chained, signed audit log** | Append-only log. Each entry stores the **full call** (tool, args, result) plus decision, timestamp, session, and `prev_hash`. `entry hash = SHA-256(RFC 8785 canonical JSON of the entry)`, and each entry is **Ed25519-signed** (decided 2026-07-24, see §7). Full content serves debugging; the chain + signature give tamper-evidence *and* authenticity. Plus a `verify` command. | Low-medium |
 | 6 | **CLI / entrypoint** | `ganimedes run --config ...`, `ganimedes verify`, `ganimedes scan`, `ganimedes init`. | Low |
-| 7 | **Packaging** | Single static binary via `go build`; install and run, no runtime. | Low |
+| 7 | **Packaging** | Single static binary via `go build`; install and run, no runtime. An optional GHCR image packages the same Linux binary; [INFRA.md](INFRA.md) and [CONTAINERS.md](CONTAINERS.md) describe its publication and limits. | Low |
 | 8 | **Risk scanner (`scan`)** | Connects to the wrapped MCP server, calls `tools/list`, and flags tools whose name/description match risky keywords (`delete`, `drop`, `exec`, `shell`, `payment`, `transfer`, network access, ...). A pre-flight helper for writing the deny-list, not a runtime enforcement path — same relationship to the deny-list that `verify` has to the audit log. Deterministic keyword matching, no ML (decided 2026-07-24, see §7). | Low |
 
 ## 4. Risk map

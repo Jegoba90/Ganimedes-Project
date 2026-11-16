@@ -30,6 +30,16 @@ publishing job can start. Tag names must be `vX.Y.Z` and a tag without its
 versioned release notes fails. These workflow changes have been checked locally
 with actionlint; the updated remote jobs still need to run before a release.
 
+**Container distribution (2026-11-16).** The release workflow additionally
+packages the already-built Linux `amd64` and `arm64` binaries in an optional
+`scratch` image at `ghcr.io/jegoba90/ganimedes-project`. A manual dry run builds
+and checks the image without logging into GHCR or publishing it; only a tagged
+release pushes its versioned image and attests its digest. The standalone binary
+still needs no container runtime (Art. 5.1). See [CONTAINERS.md](CONTAINERS.md)
+for usage and the first-publication visibility step. This configuration needs
+a successful remote dry run before its first release; it does not imply that an
+image has already been published.
+
 ### A. Needed now / soon (to ship v0 as open source)
 
 | Need | Why | Notes |
@@ -38,6 +48,7 @@ with actionlint; the updated remote jobs still need to run before a release.
 | Release automation | Cross-compile for target OS/arch, attach binaries to GitHub Releases | **Done and exercised**: three releases published (`v0.1.0` 2026-07-30, `v0.2.0` 2026-07-31, `v0.3.0` 2026-08-01) plus two `workflow_dispatch` dry runs. See `.github/workflows/release.yml`. Hand-rolled rather than `goreleaser` (decision recorded in §3). Triggered by pushing a `vX.Y.Z` tag; `workflow_dispatch` runs the same build as a dry run that publishes nothing. Six targets: linux, darwin and windows on amd64 and arm64. The version is stamped into the binary at link time (`-ldflags -X`), and the full CI workflow runs at the tagged commit before the publishing job can build artifacts. What changed in a release is written by hand in `docs/release-notes/<tag>.md` and spliced into the notes at publish time; a tag with no such file fails before publication. Hand-written and versioned with the code it describes, which keeps the release history in the repo without the generated changelog ruled out in §3. |
 | Checksums for releases | Users of a *security* tool will want to verify what they downloaded | **Done**: each release ships a `SHA256SUMS` file covering the binaries themselves (not archives), so what a user verifies is byte-for-byte the file they execute. What that proves stops at integrity, which is why the provenance attestation below exists; binary signing remains a separate open question (§3). |
 | Build provenance attestation | Checksums published beside the binaries prove integrity, not origin | **Done** (2026-07-31, decision in §3), see the `attest-build-provenance` step in `.github/workflows/release.yml`. Each of the six binaries gets a Sigstore-signed statement that it was built by that workflow, at that commit, in this repository; a user checks it with `gh attestation verify` against GitHub instead of against the release page. Keyless, so nothing has to be held or rotated. Effective from `v0.2.0`. |
+| Optional GHCR distribution | Make the existing Linux binary available as a container package | Configured in `release.yml`, with `Dockerfile` consuming the release binaries rather than compiling again. Versioned tags cover `linux/amd64` and `linux/arm64`; the OCI source label links the package to this repository, and index annotations carry its description. Only tag-triggered runs log in with `GITHUB_TOKEN` and publish. Image provenance proves origin, not safety. Initial GHCR visibility is private and must be changed to public in package settings for anonymous pulls. |
 
 That's the entire list. No servers, no database, no paid cloud account.
 
@@ -70,6 +81,20 @@ a constraint on future design, not just a v0 scoping note.
 | Binary signing | none (v0) vs `cosign`/similar | **Still open, and smaller than it was.** Deferred on key custody: a self-managed signing key has to be held, rotated and kept out of the repository, and losing it is worse than never having had it. The provenance attestation below now covers most of what signing was wanted for, without a key. What remains uncovered is distribution through channels that carry the binary away from GitHub (a package manager, a mirror), where an attestation tied to this repository's API is harder to check. Revisit if that day comes. |
 
 ### Resolved
+
+**Container packaging: optional GHCR image of the existing binary** (decided
+2026-11-16). GitHub's Packages sidebar is a separate distribution channel from
+Releases; attaching executable assets to a release never fills it. The requested
+package is therefore a real additional artifact, not a badge claiming that one
+exists. The image uses `scratch` and packages the same cross-compiled Linux
+binary, which keeps Docker optional and avoids a second compiler or runtime
+dependency in the product. Its cost is an additional build, smoke check,
+publication and provenance attestation in the release workflow, plus GHCR's
+one-time visibility setup. It contains no MCP server or runtime: `run` and `scan`
+need a derived image containing those, and ordinary port publishing does not
+expose the loopback approval page. Those boundaries are documented in
+[CONTAINERS.md](CONTAINERS.md), rather than presenting the image as a drop-in
+replacement for every standalone-binary workflow (Art. 2.4).
 
 **Build provenance attestation: yes, via GitHub's Sigstore-backed attestation**
 (decided 2026-07-31, implemented the same day in `release.yml`). The reason is that
