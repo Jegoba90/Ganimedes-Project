@@ -1,5 +1,11 @@
-// Command ganimedes is the entrypoint for the Ganimedes CLI.
-//
+package main
+
+import (
+	"os"
+
+	"github.com/Jegoba90/Ganimedes-Project/internal/cli"
+)
+
 // In Go, an executable lives in `package main` and starts at func main().
 // By convention we keep this file tiny: it wires the process together and
 // hands off to internal/cli. All real logic lives in internal packages so it
@@ -9,14 +15,9 @@
 // the Go community convention for "the main packages that produce binaries".
 // The folder name (ganimedes) becomes the binary name when you run
 // `go build ./cmd/ganimedes`.
-package main
-
-import (
-	"os"
-
-	"github.com/Jegoba90/Ganimedes-Project/internal/cli"
-)
-
+//
+// Keep this implementation explanation here rather than in the package
+// comment: pkg.go.dev presents that comment as the command's user manual.
 func main() {
 	// os.Args[0] is the program name; the real arguments start at [1:].
 	//
