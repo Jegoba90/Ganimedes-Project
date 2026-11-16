@@ -466,6 +466,7 @@ packaging evidence, not a claim that a container release has been published.
 | `golangci-lint run ./...` | Passed |
 | `actionlint` | Passed |
 | OCI build and archive inspection | Exactly `linux/amd64` and `linux/arm64`, with description on the image index |
+| Docker build context | Exported context contains exactly `Dockerfile`, `LICENSE` and the two Linux binaries; logs, signing keys and caches are excluded |
 | Import and execute `version` | Passed on amd64 with networking disabled and a read-only root filesystem |
 | Verify a real audit log | Passed inside the amd64 container, with the log and public key mounted read-only; private key kept outside the mount |
 
@@ -477,6 +478,12 @@ GHCR and image attestation still need the first publishing run; a remote
 `workflow_dispatch` rehearsal is required before tagging. Manual runs are
 guarded by event type as well as ref type, so selecting a tag for a rehearsal
 does not authorize publication.
+
+The context exclusion check was also seen to fail (Art. 2.5, §L4): a deliberate
+exception for a synthetic `should-not-ship.txt` file made the four-file check
+reject the exported context. The exception was then removed and the original
+four-file context retained. Parent directories are not broadly re-included in
+`.dockerignore`, because doing that would admit their unrelated descendants.
 
 ## 2. Where Postman *might* re-enter (forward note, not a decision)
 
