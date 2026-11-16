@@ -1,0 +1,12 @@
+# Only the release binaries and license enter the build context. Audit logs,
+# keys, source and the Git directory never need to be sent to the builder.
+**
+!Dockerfile
+!LICENSE
+!dist/
+!dist/container/
+!dist/container/linux/
+!dist/container/linux/amd64/
+!dist/container/linux/amd64/ganimedes
+!dist/container/linux/arm64/
+!dist/container/linux/arm64/ganimedes

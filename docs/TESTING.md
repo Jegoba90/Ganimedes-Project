@@ -452,6 +452,32 @@ check, ran against the release candidate the same day and are under §L3. They
 were not repeated against the downloaded binary, which differs from that
 candidate only by the `scan` message fix it verified above.
 
+### Optional container packaging — local verification (2026-11-16)
+
+Checked on Windows/amd64 with Go 1.26.10 and Docker Engine 29.9.2. The
+container used unstamped development binaries compiled from this tree; this is
+packaging evidence, not a claim that a container release has been published.
+
+| Check | Result |
+|-------|--------|
+| `go build ./...`, `go vet ./...` | Passed |
+| `gofmt -l .` | Empty after normalizing checkout CRLF to LF; no Go source diff |
+| `go test ./...` with coverage profile | Passed; every package meets `.github/coverage-baseline.json` |
+| `golangci-lint run ./...` | Passed |
+| `actionlint` | Passed |
+| OCI build and archive inspection | Exactly `linux/amd64` and `linux/arm64`, with description on the image index |
+| Import and execute `version` | Passed on amd64 with networking disabled and a read-only root filesystem |
+| Verify a real audit log | Passed inside the amd64 container, with the log and public key mounted read-only; private key kept outside the mount |
+
+The Windows sandbox refused directory resolution in the file-lock tests; the
+passing full test and lint run used execution outside that sandbox. The race
+detector was not run on Windows. The arm64 image was built and its manifest
+checked, not executed on this host. Registry push, digest preservation through
+GHCR and image attestation still need the first publishing run; a remote
+`workflow_dispatch` rehearsal is required before tagging. Manual runs are
+guarded by event type as well as ref type, so selecting a tag for a rehearsal
+does not authorize publication.
+
 ## 2. Where Postman *might* re-enter (forward note, not a decision)
 
 The open question was: if milestone 4's approval page exposed JSON endpoints

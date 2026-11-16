@@ -155,9 +155,9 @@ jobs:
           # nobody reads. The repo went public with v0.1.0, so the workaround is
           # gone and the findings land where GitHub actually surfaces them.
 
-  # --- CONTAINER SCANNING: N/A ---
-  # Ganimedes ships as a binary, not a Docker image, so there is nothing to
-  # build and scan here (unlike CryptoCapi's backend/collector images).
+  # Optional container packaging lives in release.yml, after this full gate.
+  # Its scratch image adds no server runtime or OS packages; it contains the
+  # same Linux binaries checked here. No separate container-image scan runs.
 
   # Approval HTTP handlers are covered by hermetic tests. A real-browser smoke
   # remains a separate manual check; no browser E2E job runs in this workflow.

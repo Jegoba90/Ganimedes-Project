@@ -73,7 +73,7 @@ Anything that breaks a guarantee the docs actually make:
   (Constitution Art. 3.1).
 - A signing key or audit log written more permissively than intended on a system
   that enforces file modes.
-- The release pipeline: any way to land bytes in a release, or an attestation,
+- The release pipeline: any way to land bytes in a release, a GHCR image, or an attestation,
   that did not come from this repository's own workflow.
 
 ## Out of scope, because it is already known and written down
@@ -196,6 +196,27 @@ directly:
 ```sh
 go install github.com/Jegoba90/Ganimedes-Project/cmd/ganimedes@latest
 ```
+
+### Container images
+
+The optional GHCR image packages the same Linux binaries as the release. It
+contains no shell, MCP server or server runtime, and runs as UID/GID `65532`.
+Mount logs and public keys read-only for `verify`; the container user still needs
+permission to read them. Do not mount a private signing key just to verify a log.
+
+Each published image digest receives a build provenance attestation. Verify the
+digest reported by the release workflow, substituting its hexadecimal value:
+
+```sh
+gh attestation verify oci://ghcr.io/jegoba90/ganimedes-project@sha256:<digest> --repo Jegoba90/Ganimedes-Project
+```
+
+This proves origin, not safety. Tags can move; use the verified digest when you
+need to keep running the same image. Container packaging adds no policy control:
+Ganimedes still only governs calls crossing the MCP server it wraps. `run` and
+`scan` require that server and its runtime inside the same container, and ordinary
+port publishing does not expose the loopback-only approval page. See
+[the container guide](docs/CONTAINERS.md) for those boundaries.
 
 ## Where the security reasoning lives
 
